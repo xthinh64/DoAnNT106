@@ -6,3 +6,6 @@ Thành viên:
 - Ngô Trọng Nhân 25521283
 - Tống Mai Xuân Thịnh 25521782
 - Trần Ngọc Tài 25521631
+
+## Đề tài
+- Ứng dụng chơi cờ vua, cờ caro online, tích hợp ghép đấu, trò chuyện online, ghi nhận lịch sử đấu, bảng xếp hạng cá nhân.
