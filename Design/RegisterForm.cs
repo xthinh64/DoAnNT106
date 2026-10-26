@@ -1,8 +1,9 @@
+using MySql.Data.MySqlClient;
+
 namespace OnlineChessGame
 {
     public partial class RegisterForm : Form
     {
-        // === EVENT: Network Hook sẵn sàng nối Socket TCP ===
         public event Action<string, string, string>? OnRegisterRequested;
 
         public RegisterForm()
@@ -95,15 +96,57 @@ namespace OnlineChessGame
 
             lblError.Text = "";
 
-            if (OnRegisterRequested != null)
-            {
-                OnRegisterRequested.Invoke(user, display, pass);
-                return;
-            }
+            string connString = "Server=localhost;Database=onlinechessdb;Uid=root;Pwd=Taitn2007;";
 
-            MessageBox.Show("Tao tai khoan thanh cong! Ban co the dang nhap ngay.", "Thanh cong",
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
-            Program.Context.SwitchTo(new LoginForm());
+            try
+            {
+                using (MySqlConnection conn = new MySqlConnection(connString))
+                {
+                    conn.Open();
+
+                    // Kiểm tra xem tên đăng ký đã tồn tại chưa
+                    string checkExist = "SELECT COUNT(*) FROM Users WHERE username = @user";
+                    using (MySqlCommand cmdCheck = new MySqlCommand(checkExist, conn))
+                    {
+                        cmdCheck.Parameters.AddWithValue("@user", user);
+                        int count = Convert.ToInt32(cmdCheck.ExecuteScalar());
+                        if (count > 0)
+                        {
+                            lblError.Text = "Tên tài khoản này đã tồn tại!";
+                            return;
+                        }
+                    }
+
+                    // Thêm tài khoản mới vào bảng Users
+                    string insertUser = "INSERT INTO Users (username, password_hash, display_name) VALUES (@user, @pass, @display); SELECT LAST_INSERT_ID();";
+                    long newUserId = 0;
+                    using (MySqlCommand cmdInsert = new MySqlCommand(insertUser, conn))
+                    {
+                        cmdInsert.Parameters.AddWithValue("@user", user);
+                        cmdInsert.Parameters.AddWithValue("@pass", pass);
+                        cmdInsert.Parameters.AddWithValue("@display", display);
+
+                        newUserId = Convert.ToInt64(cmdInsert.ExecuteScalar());
+                    }
+
+                    // Khởi tạo Elo mặc định cho Cờ Vua và Cờ Caro trong UserGameStats
+                    string insertStats = "INSERT INTO UserGameStats (user_id, game_type, elo) VALUES (@userId, 'CHESS', 1200), (@userId, 'CARO', 1200);";
+                    using (MySqlCommand cmdStats = new MySqlCommand(insertStats, conn))
+                    {
+                        cmdStats.Parameters.AddWithValue("@userId", newUserId);
+                        cmdStats.ExecuteNonQuery();
+                    }
+
+                    MessageBox.Show("Tạo tài khoản thành công! Bạn có thể đăng nhập ngay.", "Thành công",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Program.Context.SwitchTo(new LoginForm());
+                }
+            }
+            catch (Exception ex)
+            {
+                lblError.Text = "Lỗi kết nối CSDL!";
+                MessageBox.Show("Chi tiết lỗi: " + ex.Message, "Lỗi Database", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void BtnBack_Click(object? sender, EventArgs e)
