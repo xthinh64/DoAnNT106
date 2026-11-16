@@ -1,15 +1,17 @@
-using MySql.Data.MySqlClient;
+using OnlineChessGame.Network;
 
 namespace OnlineChessGame
 {
     public partial class RegisterForm : Form
     {
+        private readonly CancellationTokenSource lifetime = new();
         public event Action<string, string, string>? OnRegisterRequested;
 
         public RegisterForm()
         {
             InitializeComponent();
             ApplyCurrentTheme();
+            Disposed += (_, _) => { lifetime.Cancel(); lifetime.Dispose(); };
         }
 
         private void RegisterForm_Load(object? sender, EventArgs e)
@@ -66,86 +68,51 @@ namespace OnlineChessGame
             ApplyCurrentTheme();
         }
 
-        private void BtnRegister_Click(object? sender, EventArgs e)
+        private async void BtnRegister_Click(object? sender, EventArgs e)
         {
             string user = txtUser.Text.Trim();
             string display = txtDisplay.Text.Trim();
-            string pass = txtPass.Text.Trim();
-            string confirm = txtConfirm.Text.Trim();
-
-            if (string.IsNullOrEmpty(user))
+            string pass = txtPass.Text;
+            if (string.IsNullOrWhiteSpace(user) || user.Length > 50 || string.IsNullOrWhiteSpace(display) || display.Length > 100)
             {
-                lblError.Text = "Vui long nhap ten tai khoan!";
+                lblError.Text = "Tài khoản tối đa 50, tên hiển thị tối đa 100 ký tự.";
                 return;
             }
-            if (string.IsNullOrEmpty(display))
+            if (pass.Length < 8 || pass.Length > 128)
             {
-                lblError.Text = "Vui long nhap ten hien thi!";
+                lblError.Text = "Mật khẩu phải có từ 8 đến 128 ký tự.";
                 return;
             }
-            if (pass.Length < 4)
+            if (pass != txtConfirm.Text)
             {
-                lblError.Text = "Mat khau phai co toi thieu 4 ky tu!";
+                lblError.Text = "Mật khẩu xác nhận không trùng khớp.";
                 return;
             }
-            if (pass != confirm)
-            {
-                lblError.Text = "Mat khau xac nhan khong trung khop!";
-                return;
-            }
-
-            lblError.Text = "";
-
-            string connString = "Server=localhost;Database=onlinechessdb;Uid=root;Pwd=Taitn2007;";
-
+            btnRegister.Enabled = btnBack.Enabled = false;
+            lblError.Text = "Đang đăng ký qua TLS...";
             try
             {
-                using (MySqlConnection conn = new MySqlConnection(connString))
+                var result = await AuthConnection.CreateClient().SendAsync(
+                    new AuthRequest("signup", user, pass, display), lifetime.Token);
+                if (IsDisposed) return;
+                txtPass.Clear();
+                txtConfirm.Clear();
+                if (result.Success)
                 {
-                    conn.Open();
-
-                    // Kiểm tra xem tên đăng ký đã tồn tại chưa
-                    string checkExist = "SELECT COUNT(*) FROM Users WHERE username = @user";
-                    using (MySqlCommand cmdCheck = new MySqlCommand(checkExist, conn))
-                    {
-                        cmdCheck.Parameters.AddWithValue("@user", user);
-                        int count = Convert.ToInt32(cmdCheck.ExecuteScalar());
-                        if (count > 0)
-                        {
-                            lblError.Text = "Tên tài khoản này đã tồn tại!";
-                            return;
-                        }
-                    }
-
-                    // Thêm tài khoản mới vào bảng Users
-                    string insertUser = "INSERT INTO Users (username, password_hash, display_name) VALUES (@user, @pass, @display); SELECT LAST_INSERT_ID();";
-                    long newUserId = 0;
-                    using (MySqlCommand cmdInsert = new MySqlCommand(insertUser, conn))
-                    {
-                        cmdInsert.Parameters.AddWithValue("@user", user);
-                        cmdInsert.Parameters.AddWithValue("@pass", pass);
-                        cmdInsert.Parameters.AddWithValue("@display", display);
-
-                        newUserId = Convert.ToInt64(cmdInsert.ExecuteScalar());
-                    }
-
-                    // Khởi tạo Elo mặc định cho Cờ Vua và Cờ Caro trong UserGameStats
-                    string insertStats = "INSERT INTO UserGameStats (user_id, game_type, elo) VALUES (@userId, 'CHESS', 1200), (@userId, 'CARO', 1200);";
-                    using (MySqlCommand cmdStats = new MySqlCommand(insertStats, conn))
-                    {
-                        cmdStats.Parameters.AddWithValue("@userId", newUserId);
-                        cmdStats.ExecuteNonQuery();
-                    }
-
-                    MessageBox.Show("Tạo tài khoản thành công! Bạn có thể đăng nhập ngay.", "Thành công",
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show("Tạo tài khoản thành công. Hãy đăng nhập.", "Thông báo");
                     Program.Context.SwitchTo(new LoginForm());
+                    return;
                 }
+                lblError.Text = result.Message;
             }
-            catch (Exception ex)
+            catch (OperationCanceledException) { if (!IsDisposed) lblError.Text = "Kết nối đã hủy hoặc hết thời gian chờ."; }
+            catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or System.Security.Authentication.AuthenticationException or ArgumentException or InvalidOperationException)
             {
-                lblError.Text = "Lỗi kết nối CSDL!";
-                MessageBox.Show("Chi tiết lỗi: " + ex.Message, "Lỗi Database", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (!IsDisposed) lblError.Text = "Không thể kết nối TLS. Kiểm tra server và pin chứng chỉ.";
+            }
+            finally
+            {
+                if (!IsDisposed) btnRegister.Enabled = btnBack.Enabled = true;
             }
         }
 

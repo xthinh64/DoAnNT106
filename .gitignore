@@ -1,0 +1,11 @@
+# Build output (previously tracked output is intentionally not removed here)
+**/bin/
+**/obj/
+**/__pycache__/
+TestResults/
+# Never commit private keys or local credentials
+*.pfx
+*.p12
+*.key
+.env
+.env.*

@@ -1,15 +1,21 @@
-using MySql.Data.MySqlClient;
+using OnlineChessGame.Network;
 
 namespace OnlineChessGame
 {
     public partial class LoginForm : Form
     {
+        private readonly CancellationTokenSource lifetime = new();
         public event Action<string, string, string>? OnLoginRequested;
 
         public LoginForm()
         {
             InitializeComponent();
             ApplyCurrentTheme();
+            Disposed += (_, _) => { lifetime.Cancel(); lifetime.Dispose(); };
+            txtServer.Text = AuthConnection.Endpoint;
+            chkRemember.Checked = false;
+            chkRemember.Enabled = false;
+            chkRemember.Text = "Không lưu mật khẩu trên máy";
         }
 
         private void LoginForm_Load(object? sender, EventArgs e)
@@ -63,81 +69,46 @@ namespace OnlineChessGame
             ApplyCurrentTheme();
         }
 
-        private void BtnLogin_Click(object? sender, EventArgs e)
+        private async void BtnLogin_Click(object? sender, EventArgs e)
         {
             string user = txtUser.Text.Trim();
-            string pass = txtPass.Text.Trim();
-
-            if (string.IsNullOrEmpty(user))
+            string pass = txtPass.Text;
+            if (string.IsNullOrWhiteSpace(user) || string.IsNullOrEmpty(pass))
             {
-                lblError.Text = "Vui long nhap ten tai khoan!";
+                lblError.Text = "Vui lòng nhập tài khoản và mật khẩu.";
                 return;
             }
-            if (string.IsNullOrEmpty(pass))
-            {
-                lblError.Text = "Vui long nhap mat khau!";
-                return;
-            }
-
-            lblError.Text = "";
-
-            // Thay đổi "Pwd=;" nếu MariaDB của bạn có mật khẩu (ví dụ: "Pwd=123456;")
-            string connString = "Server=localhost;Database=onlinechessdb;Uid=root;Pwd=Taitn2007;";
-
+            btnLogin.Enabled = btnRegister.Enabled = false;
+            lblError.Text = "Đang kết nối bảo mật...";
             try
             {
-                using (MySqlConnection conn = new MySqlConnection(connString))
+                AuthConnection.Endpoint = txtServer.Text.Trim();
+                var result = await AuthConnection.CreateClient().SendAsync(
+                    new AuthRequest("signin", user, pass), lifetime.Token);
+                if (IsDisposed) return;
+                txtPass.Clear();
+                if (result.Success && result.Player is { } player)
                 {
-                    conn.Open();
-
-                    string checkQuery = "SELECT user_id, password_hash FROM Users WHERE username = @user";
-                    using (MySqlCommand cmdCheck = new MySqlCommand(checkQuery, conn))
-                    {
-                        cmdCheck.Parameters.AddWithValue("@user", user);
-                        using (var reader = cmdCheck.ExecuteReader())
-                        {
-                            if (reader.Read())
-                            {
-                                string storedPass = reader["password_hash"].ToString();
-                                
-                                if (storedPass == pass)
-                                {
-                                    MessageBox.Show("Đăng nhập thành công!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                                    Program.Context.SwitchTo(new DashboardForm(user, 1200));
-                                }
-                                else
-                                {
-                                    lblError.Text = "Sai mật khẩu!";
-                                }
-                            }
-                            else
-                            {
-                                lblError.Text = "Tài khoản không tồn tại!";
-                                DialogResult dialogResult = MessageBox.Show(
-                                    "Tài khoản chưa tồn tại. Bạn có muốn chuyển sang trang Đăng ký không?",
-                                    "Thông báo",
-                                    MessageBoxButtons.YesNo,
-                                    MessageBoxIcon.Question
-                                );
-
-                                if (dialogResult == DialogResult.Yes)
-                                {
-                                    Program.Context.SwitchTo(new RegisterForm());
-                                }
-                            }
-                        }
-                    }
+                    AuthConnection.Player = player;
+                    Program.Context.SwitchTo(new DashboardForm(player.Username, player.ChessElo));
+                    return;
                 }
+                lblError.Text = result.Message;
             }
-            catch (Exception ex)
+            catch (OperationCanceledException) { if (!IsDisposed) lblError.Text = "Kết nối đã hủy hoặc hết thời gian chờ."; }
+            catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or System.Security.Authentication.AuthenticationException or ArgumentException or InvalidOperationException)
             {
-                lblError.Text = "Lỗi kết nối CSDL!";
-                MessageBox.Show("Chi tiết lỗi: " + ex.Message, "Lỗi Database", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (!IsDisposed) lblError.Text = "Không thể kết nối TLS. Kiểm tra server và pin chứng chỉ.";
+            }
+            finally
+            {
+                if (!IsDisposed) btnLogin.Enabled = btnRegister.Enabled = true;
             }
         }
 
         private void BtnRegister_Click(object? sender, EventArgs e)
         {
+            AuthConnection.Endpoint = txtServer.Text.Trim();
             Program.Context.SwitchTo(new RegisterForm());
         }
     }
