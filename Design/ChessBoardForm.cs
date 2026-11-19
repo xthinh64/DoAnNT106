@@ -1,4 +1,3 @@
-using MySql.Data.MySqlClient;
 namespace OnlineChessGame
 {
     public partial class ChessBoardForm : Form
@@ -189,13 +188,13 @@ namespace OnlineChessGame
                 {
                     if (p1Time > 0) p1Time--;
                     lblTimerPlayer.Text = $"{p1Time / 60:D2}:{p1Time % 60:D2}";
-                    if (p1Time <= 0) EndGame("Hết giờ! Quân Đen đã thắng.", p2Name, p1Name);
+                    if (p1Time <= 0) EndGame("Hết giờ! Quân Đen đã thắng.");
                 }
                 else
                 {
                     if (p2Time > 0) p2Time--;
                     lblTimerOpp.Text = $"{p2Time / 60:D2}:{p2Time % 60:D2}";
-                    if (p2Time <= 0) EndGame("Hết giờ! Quân Trắng đã thắng.", p1Name, p2Name);
+                    if (p2Time <= 0) EndGame("Hết giờ! Quân Trắng đã thắng.");
                 }
             };
             gameTimer.Start();
@@ -479,8 +478,7 @@ namespace OnlineChessGame
                     boardPanel.Invalidate();
 
                     string winner = movingPiece > 0 ? p1Name : p2Name;
-                    string loser = movingPiece > 0 ? p2Name : p1Name;
-                    EndGame($"Chiếu bí! {winner} đã bắt được Vua và giành chiến thắng!", winner, loser);
+                    EndGame($"Chiếu bí! {winner} đã bắt được Vua và giành chiến thắng!");
                     return;
                 }
             }
@@ -570,117 +568,19 @@ namespace OnlineChessGame
             lblCapturedOpp.Text = "Bat: " + (string.IsNullOrEmpty(p2Text) ? "(chua co)" : p2Text);
         }
 
-        private void EndGame(string message, string winnerUser = "", string loserUser = "")
-{
-    if (gameOver) return; // Tránh gọi lặp nhiều lần
-    gameOver = true;
-    gameTimer?.Stop();
-
-    lblTurn.Text = message;
-    lblTurn.BackColor = ThemeColors.Success;
-    lblTurn.ForeColor = Color.White;
-
-    AddChatMessage("He thong", message);
-
-    // Tiến hành lưu kết quả vào Database nếu có thông tin người chơi hợp lệ
-    if (!string.IsNullOrEmpty(winnerUser) && !string.IsNullOrEmpty(loserUser))
-    {
-        SaveGameResultToDatabase(winnerUser, loserUser, "CHESS");
-    }
-
-    MessageBox.Show(message, "Ket thuc van co Vua", MessageBoxButtons.OK, MessageBoxIcon.Information);
-}
-
-// Hàm thực thi lưu kết quả trận đấu vào cơ sở dữ liệu onlinechessdb
-private void SaveGameResultToDatabase(string winnerUsername, string loserUsername, string gameType)
-{
-    string connString = "Server=localhost;Database=onlinechessdb;Uid=root;Pwd=Taitn2007;";
-
-    try
-    {
-        using (MySqlConnection conn = new MySqlConnection(connString))
+        private void EndGame(string message)
         {
-            conn.Open();
+            if (gameOver) return;
+            gameOver = true;
+            gameTimer?.Stop();
 
-            using (MySqlTransaction transaction = conn.BeginTransaction())
-            {
-                try
-                {
-                    // 1. Thêm bản ghi vào bảng Matches
-                    string insertMatchQuery = "INSERT INTO Matches (game_type, mode, status, ended_at) VALUES (@gameType, 'ONLINE', 'COMPLETED', NOW()); SELECT LAST_INSERT_ID();";
-                    long matchId = 0;
+            lblTurn.Text = message;
+            lblTurn.BackColor = ThemeColors.Success;
+            lblTurn.ForeColor = Color.White;
 
-                    using (MySqlCommand cmdMatch = new MySqlCommand(insertMatchQuery, conn, transaction))
-                    {
-                        cmdMatch.Parameters.AddWithValue("@gameType", gameType);
-                        matchId = Convert.ToInt64(cmdMatch.ExecuteScalar());
-                    }
-
-                    int winnerId = GetUserIdByUsername(conn, transaction, winnerUsername);
-                    int loserId = GetUserIdByUsername(conn, transaction, loserUsername);
-
-                    if (winnerId == 0 || loserId == 0) return;
-
-                    // 2. Lưu kết quả Người thắng vào MatchPlayers
-                    string insertWinnerPlayer = "INSERT INTO MatchPlayers (match_id, user_id, result, elo_before, elo_after) VALUES (@matchId, @userId, 'WIN', @eloBefore, @eloAfter);";
-                    using (MySqlCommand cmdWin = new MySqlCommand(insertWinnerPlayer, conn, transaction))
-                    {
-                        cmdWin.Parameters.AddWithValue("@matchId", matchId);
-                        cmdWin.Parameters.AddWithValue("@userId", winnerId);
-                        cmdWin.Parameters.AddWithValue("@eloBefore", p1Elo);
-                        cmdWin.Parameters.AddWithValue("@eloAfter", p1Elo + 15);
-                        cmdWin.ExecuteNonQuery();
-                    }
-
-                    // 3. Lưu kết quả Người thua vào MatchPlayers
-                    string insertLoserPlayer = "INSERT INTO MatchPlayers (match_id, user_id, result, elo_before, elo_after) VALUES (@matchId, @userId, 'LOSS', @eloBefore, @eloAfter);";
-                    using (MySqlCommand cmdLose = new MySqlCommand(insertLoserPlayer, conn, transaction))
-                    {
-                        cmdLose.Parameters.AddWithValue("@matchId", matchId);
-                        cmdLose.Parameters.AddWithValue("@userId", loserId);
-                        cmdLose.Parameters.AddWithValue("@eloBefore", p2Elo);
-                        cmdLose.Parameters.AddWithValue("@eloAfter", Math.Max(100, p2Elo - 15));
-                        cmdLose.ExecuteNonQuery();
-                    }
-
-                    // 4. Cập nhật thống kê và điểm Elo trong UserGameStats
-                    string updateStats = "UPDATE UserGameStats SET wins = wins + 1, elo = elo + 15 WHERE user_id = @winnerId AND game_type = @gameType; " +
-                                         "UPDATE UserGameStats SET losses = losses + 1, elo = GREATEST(100, elo - 15) WHERE user_id = @loserId AND game_type = @gameType;";
-                    using (MySqlCommand cmdStats = new MySqlCommand(updateStats, conn, transaction))
-                    {
-                        cmdStats.Parameters.AddWithValue("@winnerId", winnerId);
-                        cmdStats.Parameters.AddWithValue("@loserId", loserId);
-                        cmdStats.Parameters.AddWithValue("@gameType", gameType);
-                        cmdStats.ExecuteNonQuery();
-                    }
-
-                    transaction.Commit();
-                }
-                catch (Exception ex)
-                {
-                    transaction.Rollback();
-                    MessageBox.Show("Lỗi lưu database: " + ex.Message, "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-            }
+            AddChatMessage("He thong", message);
+            MessageBox.Show(message, "Ket thuc van co Vua", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
-    }
-    catch (Exception ex)
-    {
-        MessageBox.Show("Lỗi kết nối CSDL: " + ex.Message, "Lỗi Database", MessageBoxButtons.OK, MessageBoxIcon.Error);
-    }
-}
-
-// Hàm phụ trợ tìm user_id
-private int GetUserIdByUsername(MySqlConnection conn, MySqlTransaction transaction, string username)
-{
-    string query = "SELECT user_id FROM Users WHERE username = @username";
-    using (MySqlCommand cmd = new MySqlCommand(query, conn, transaction))
-    {
-        cmd.Parameters.AddWithValue("@username", username);
-        object result = cmd.ExecuteScalar();
-        return result != null ? Convert.ToInt32(result) : 0;
-    }
-}
         private void SendChat()
         {
             string msg = txtChat.Text.Trim();
@@ -723,7 +623,7 @@ private int GetUserIdByUsername(MySqlConnection conn, MySqlTransaction transacti
             {
                 
                 OnSurrender?.Invoke();
-                EndGame("Bạn đã đầu hàng! Đối thủ chiến thắng.", p2Name, p1Name);
+                EndGame("Bạn đã đầu hàng! Đối thủ chiến thắng.");
             }
         }
 

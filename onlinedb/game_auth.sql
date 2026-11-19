@@ -1,5 +1,5 @@
 -- SQLBook: Code
-CREATE DATABASE IF NOT EXISTS onlinechessdb CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+usersViews
 USE onlinechessdb;
 
 -- 1. Users - Tài khoản

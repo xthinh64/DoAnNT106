@@ -52,7 +52,7 @@ Mật khẩu `root`, mật khẩu `chess_auth`, mật khẩu PFX và mật khẩ
 
 ### Nếu chỉ cài Microsoft SQL Server thì sao?
 
-Bạn cần cài thêm MySQL để làm theo hướng dẫn này. Dự án hiện dùng `MySqlConnector`, các truy vấn MySQL và script MySQL; **không chạy `game_auth.sql` trong SSMS** và không nhập chuỗi kết nối SQL Server vào ô MySQL. Chuyển sang SQL Server cần sửa lớp truy cập dữ liệu, schema, kiểm tra DB trên UI và các luồng MySQL cũ trong client. PFX/TLS vẫn độc lập với việc chọn loại database.
+Bạn cần cài thêm MySQL để làm theo hướng dẫn này. Dự án hiện dùng `MySqlConnector` tại server và script MySQL; **không chạy `game_auth.sql` trong SSMS** và không nhập chuỗi kết nối SQL Server vào ô MySQL. Chuyển sang SQL Server cần sửa lớp truy cập dữ liệu, schema và kiểm tra DB trên UI. PFX/TLS vẫn độc lập với việc chọn loại database.
 
 ## Bước 1 — Mở đúng terminal và kiểm tra .NET
 
@@ -410,10 +410,10 @@ Hướng dẫn mở rộng, gồm publish client tự chứa runtime cho máy kh
 | Tài khoản | Đăng ký, đăng nhập qua TCP/TLS; lưu tài khoản và đọc hồ sơ/Elo từ MySQL | Chưa có token/session, thu hồi phiên hoặc quy trình quên mật khẩu |
 | Gateway và worker | Round-robin theo kết nối, gateway chuyển tiếp TLS tới hai worker loopback; fallback nếu chưa kết nối TCP được tới worker | Ba listener cùng một tiến trình; chưa có health check định kỳ hoặc gateway dự phòng |
 | Quản trị server | WinForms: cấu hình IP/cổng, PFX và MySQL; tạo PFX; kiểm tra schema auth; khởi động/dừng; sao chép certificate pin; bộ đếm và nhật ký | Quản lý instance do chính cửa sổ khởi chạy; chưa có điều khiển server console từ xa hoặc CRUD tài khoản/phòng/trận |
-| Client | Đăng nhập, đăng ký, sảnh, bàn cờ vua/caro; giao diện sáng/tối | Một số luồng gameplay cũ còn truy cập MySQL trực tiếp |
+| Client | Đăng nhập, đăng ký, sảnh, bàn cờ vua/caro; giao diện sáng/tối; không giữ thông tin DB | Gameplay online chưa có session và transport riêng |
 | Cờ vua cục bộ | Bàn 8×8, nước đi cơ bản, bắt quân, phong hậu, bot đơn giản và đồng hồ | Chưa hoàn thiện an toàn vua, chiếu/chiếu bí, nhập thành, en passant và các luật hòa |
 | Caro cục bộ | Bàn 15×15, kiểm tra từ 5 quân liên tiếp theo bốn hướng, bot đơn giản và đồng hồ | Chưa có xác nhận luật/kết quả trên server |
-| Hàng chờ và trận | Có UI và logic hàng chờ MySQL cũ | Chưa bảo đảm hai client cùng tham gia và đồng bộ một trận qua server |
+| Hàng chờ và trận | Có nút UI và schema dự kiến | Nút Rank hiện báo đang phát triển; chưa có hàng chờ hoặc trận được server quản lý |
 | Chat, lịch sử và Elo | Có UI/event chat, schema và một phần lưu kết quả cờ vua | Chưa có transport chat liên máy; lịch sử sảnh đang dùng dữ liệu mẫu; kết quả/Elo chưa thống nhất mọi nhánh |
 
 ## Kiến trúc đang triển khai
@@ -518,7 +518,7 @@ python -m unittest discover -s Tests -p "test_*.py"
 - Test Python kiểm tra cấu trúc mã nối UI/entrypoint, không thay thế kiểm thử thao tác GUI hoặc LAN nhiều máy.
 - Các số liệu test/build cũ trong `AUTH-SERVER.md` là kết quả ghi nhận ở thời điểm tài liệu đó được viết, không phải kết quả tự động cập nhật của checkout hiện tại.
 
-Kiểm tra khi bổ sung ServerManager (19/11/2026): build solution đạt, 0 lỗi và 7 cảnh báo hiện có ở client; ServerManager không có cảnh báo. Transport: 27 đạt; auth: 24 đạt, 5 test DB bỏ qua; giám sát: 4 đạt; Python: 6 đạt. Kiểm tra trực tiếp WinForms trên Windows đã xác nhận mở hai tab, báo IP sai/cổng trùng, khôi phục trạng thái nút sau lỗi và đóng cửa sổ sạch. Chưa nghiệm thu kết nối MySQL thật từ UI hoặc LAN ba máy trong đợt kiểm tra này.
+Kiểm tra gần nhất ngày 19/11/2026: client build đạt, 0 lỗi và 2 cảnh báo event chưa dùng; Python: 8 đạt, gồm kiểm tra client không còn provider/credential DB và Rank không mở hàng chờ giả. Đợt kiểm tra ServerManager trước đó ghi nhận transport 27 đạt; auth 24 đạt, 5 test DB bỏ qua; giám sát 4 đạt. Kiểm tra trực tiếp WinForms đã xác nhận mở hai tab, báo IP sai/cổng trùng, khôi phục trạng thái nút sau lỗi và đóng cửa sổ sạch. Chưa nghiệm thu gameplay online hoặc LAN ba máy đầy đủ.
 
 ## Những phần cần hoàn thiện
 
@@ -527,7 +527,7 @@ Kiểm tra khi bổ sung ServerManager (19/11/2026): build solution đạt, 0 l�
 3. Bộ luật đầy đủ và trạng thái bàn cờ/đồng hồ do server xác nhận.
 4. Chốt trận và cập nhật Elo/lịch sử một lần, thống nhất cả hai trò chơi.
 5. Chat, heartbeat, reconnect và đồng bộ snapshot khi mất mạng.
-6. Thay truy vấn MySQL trong client bằng API server; hoàn thiện nguồn dữ liệu thật cho lịch sử/xếp hạng.
+6. Xây dựng API server cho hàng chờ, lịch sử và xếp hạng; client không truy cập DB trực tiếp.
 7. Mở rộng UI quản trị với người chơi, phòng và trận khi các dịch vụ tương ứng đã có; tách gateway/worker thành tiến trình riêng nếu cần khả năng triển khai độc lập.
 
 Tài liệu chi tiết về auth và các giới hạn nền: [AUTH-SERVER.md](AUTH-SERVER.md). Repository tham khảo: [CS-Winform-Project-nd-Lab](https://github.com/thnhngaan/CS-Winform-Project-nd-Lab); dự án hiện tại giữ client WinForms và MySQL, không chuyển sang Unity/SQL Server.
