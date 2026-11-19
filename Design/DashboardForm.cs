@@ -1,4 +1,4 @@
-using MySql.Data.MySqlClient;
+using OnlineChessGame.Chess;
 
 namespace OnlineChessGame
 {
@@ -6,11 +6,6 @@ namespace OnlineChessGame
     {
         private string playerName = "Kỳ thủ VN";
         private int elo = 1200;
-        private System.Windows.Forms.Timer? queueTimer;
-        private int queueSeconds = 0;
-        private bool isQueuing = false;
-        private string activeQueueGame = "Co Vua"; // "Co Vua" hoặc "Co Caro"
-
         // === EVENT: Network Hooks sẵn sàng nối Socket TCP ===
         public event Action<string>? OnRankedQueueRequested;
         public event Action? OnCancelQueueRequested;
@@ -22,6 +17,8 @@ namespace OnlineChessGame
         public DashboardForm()
         {
             InitializeComponent();
+            btnRankedChess.Text = "Đấu Rank (Đang phát triển)";
+            btnRankedCaro.Text = "Đấu Rank (Đang phát triển)";
             ApplyCurrentTheme();
             BuildHistoryRows();
         }
@@ -207,12 +204,23 @@ namespace OnlineChessGame
 
         private void BtnSoloChess_Click(object? sender, EventArgs e)
         {
-            Program.Context.SwitchTo(new ChessBoardForm(playerName, elo, "Computer Chess", 1250, isSolo: true));
+            using var dialog = new ChessDifficultyDialog();
+            if (dialog.ShowDialog(this) != DialogResult.OK || dialog.SelectedDifficulty is null)
+                return;
+
+            ChessDifficulty difficulty = dialog.SelectedDifficulty;
+            Program.Context.SwitchTo(new ChessBoardForm(
+                playerName,
+                elo,
+                $"Stockfish - {difficulty.DisplayName}",
+                difficulty.DisplayElo,
+                isSolo: true,
+                difficulty));
         }
 
         private void BtnRankedChess_Click(object? sender, EventArgs e)
         {
-            StartQueue("Co Vua");
+            ShowRankedUnavailable("Chess");
         }
 
         private void BtnSoloCaro_Click(object? sender, EventArgs e)
@@ -222,195 +230,25 @@ namespace OnlineChessGame
 
         private void BtnRankedCaro_Click(object? sender, EventArgs e)
         {
-            StartQueue("Co Caro");
+            ShowRankedUnavailable("Caro");
         }
 
-        // === TÍCH HỢP HÀNG CHỜ GHÉP TRẬN QUA CSDL (ELO +- 50) ===
-        private void StartQueue(string gameType)
+        private void ShowRankedUnavailable(string gameType)
         {
-            if (isQueuing) return;
-            isQueuing = true;
-            activeQueueGame = gameType;
-            queueSeconds = 0;
-            queuePanel.Visible = true;
-            lblQueueStatus.Text = $"Đang tìm đối thủ {gameType} (Elo: {elo} ± 50)...";
-
-            string dbGameType = (gameType == "Co Vua") ? "CHESS" : "CARO";
-
-            // 1. Đưa người chơi vào hàng chờ trên Database
-            string connString = "Server=localhost;Database=onlinechessdb;Uid=root;Pwd=Taitn2007;";
-            try
-            {
-                using (MySqlConnection conn = new MySqlConnection(connString))
-                {
-                    conn.Open();
-                    // Xóa trước nếu lỡ tồn tại hàng chờ cũ
-                    string cleanOld = "DELETE FROM MatchmakingQueue WHERE username = @user;";
-                    using (MySqlCommand cmdClean = new MySqlCommand(cleanOld, conn))
-                    {
-                        cmdClean.Parameters.AddWithValue("@user", playerName);
-                        cmdClean.ExecuteNonQuery();
-                    }
-
-                    // Thêm mới vào queue
-                    string insertQueue = "INSERT INTO MatchmakingQueue (username, game_type, elo) VALUES (@user, @gameType, @elo);";
-                    using (MySqlCommand cmdIns = new MySqlCommand(insertQueue, conn))
-                    {
-                        cmdIns.Parameters.AddWithValue("@user", playerName);
-                        cmdIns.Parameters.AddWithValue("@gameType", dbGameType);
-                        cmdIns.Parameters.AddWithValue("@elo", elo);
-                        cmdIns.ExecuteNonQuery();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Lỗi kết nối hàng chờ: " + ex.Message, "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                StopQueue();
-                return;
-            }
-            int nearbyCount = GetNearbyPlayersCount(dbGameType);
-            lblQueueStatus.Text = $"Đang tìm đối thủ {gameType} (Elo: {elo} ± 50)... | Có {nearbyCount} người đang trong tầm Elo";      
-            // 2. Bật Timer quét liên tục mỗi 2 giây để tìm đối thủ phù hợp
-            queueTimer = new System.Windows.Forms.Timer { Interval = 2000 };
-            queueTimer.Tick += (s, e) =>
-            {
-                queueSeconds += 2;
-                int min = (queueSeconds / 2) / 60; // hoặc đếm theo giây thực tế
-                int sec = (queueSeconds / 2) % 60;
-                lblQueueTimer.Text = $"Thời gian chờ: {queueSeconds / 2:D2}s";
-                int currentNearby = GetNearbyPlayersCount(dbGameType);
-                // Gọi hàm quét đối thủ trong database
-                CheckDatabaseMatchmaking(dbGameType);
-            };
-            queueTimer.Start();
-        }
-
-        private int GetNearbyPlayersCount(string dbGameType)
-        {
-            string connString = "Server=localhost;Database=onlinechessdb;Uid=root;Pwd=Taitn2007;";
-            try
-            {
-                using (MySqlConnection conn = new MySqlConnection(connString))
-                {
-                    conn.Open();
-                    string countQuery = "SELECT COUNT(*) FROM MatchmakingQueue WHERE username != @user AND game_type = @gameType AND elo BETWEEN @minElo AND @maxElo;";
-                    using (MySqlCommand cmd = new MySqlCommand(countQuery, conn))
-                    {
-                        cmd.Parameters.AddWithValue("@user", playerName);
-                        cmd.Parameters.AddWithValue("@gameType", dbGameType);
-                        cmd.Parameters.AddWithValue("@minElo", elo - 50);
-                        cmd.Parameters.AddWithValue("@maxElo", elo + 50);
-
-                    return Convert.ToInt32(cmd.ExecuteScalar());
-                     }
-                }
-            }
-           catch
-           {
-          return 0;
-           }   }
-        private void CheckDatabaseMatchmaking(string dbGameType)
-        {
-            string connString = "Server=localhost;Database=onlinechessdb;Uid=root;Pwd=Taitn2007;";
-            try
-            {
-                using (MySqlConnection conn = new MySqlConnection(connString))
-                {
-                    conn.Open();
-
-                    // Tìm kiếm đối thủ khác trong queue có cùng loại game và chênh lệch Elo <= 50
-                    string findOpponent = "SELECT username, elo FROM MatchmakingQueue WHERE username != @user AND game_type = @gameType AND elo BETWEEN @minElo AND @maxElo ORDER BY joined_at ASC LIMIT 1;";
-                    
-                    using (MySqlCommand cmd = new MySqlCommand(findOpponent, conn))
-                    {
-                        cmd.Parameters.AddWithValue("@user", playerName);
-                        cmd.Parameters.AddWithValue("@gameType", dbGameType);
-                        cmd.Parameters.AddWithValue("@minElo", elo - 50);
-                        cmd.Parameters.AddWithValue("@maxElo", elo + 50);
-
-                        using (var reader = cmd.ExecuteReader())
-                        {
-                            if (reader.Read())
-                            {
-                                string oppName = reader["username"].ToString();
-                                int oppElo = Convert.ToInt32(reader["elo"]);
-                                reader.Close();
-
-                                // THÀNH CÔNG: Dừng timer tìm trận
-                                StopQueueWithoutDB();
-
-                                // Xóa cả 2 người ra khỏi bảng MatchmakingQueue để tránh ghép trùng
-                                string removeBoth = "DELETE FROM MatchmakingQueue WHERE username IN (@user1, @user2);";
-                                using (MySqlCommand cmdDel = new MySqlCommand(removeBoth, conn))
-                                {
-                                    cmdDel.Parameters.AddWithValue("@user1", playerName);
-                                    cmdDel.Parameters.AddWithValue("@user2", oppName);
-                                    cmdDel.ExecuteNonQuery();
-                                }
-
-                                // Mở màn hình chơi tương ứng
-                                MessageBox.Show($"Đã tìm thấy đối thủ: {oppName} (Elo: {oppElo})!", "Ghép trận thành công", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                                
-                                this.Invoke((MethodInvoker)delegate {
-                                    if (activeQueueGame == "Co Vua")
-                                    {
-                                        Program.Context.SwitchTo(new ChessBoardForm(playerName, elo, oppName, oppElo, isSolo: false));
-                                    }
-                                    else
-                                    {
-                                        Program.Context.SwitchTo(new CaroBoardForm(playerName, elo, oppName, oppElo, isSolo: false));
-                                    }
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                // Bỏ qua lỗi ngầm trong vòng lặp timer để tránh gián đoạn
-            }
+            OnRankedQueueRequested?.Invoke(gameType);
+            MessageBox.Show(
+                "Đấu Rank chưa được kết nối với server gameplay. " +
+                "Phiên bản hiện tại hỗ trợ đăng ký, đăng nhập và chơi Solo. " +
+                "Client không truy cập MySQL trực tiếp.",
+                "Tính năng đang phát triển",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
         }
 
         private void BtnCancelQueue_Click(object? sender, EventArgs e)
         {
-            StopQueue();
-            MessageBox.Show("Đã hủy tìm trận.", "Thông báo");
-        }
-
-        // Dừng hàng chờ và xóa tên khỏi Database
-        private void StopQueue()
-        {
-            StopQueueWithoutDB();
-
-            string connString = "Server=localhost;Database=onlinechessdb;Uid=root;Pwd=Taitn2007;";
-            try
-            {
-                using (MySqlConnection conn = new MySqlConnection(connString))
-                {
-                    conn.Open();
-                    string deleteQueue = "DELETE FROM MatchmakingQueue WHERE username = @user;";
-                    using (MySqlCommand cmd = new MySqlCommand(deleteQueue, conn))
-                    {
-                        cmd.Parameters.AddWithValue("@user", playerName);
-                        cmd.ExecuteNonQuery();
-                    }
-                }
-            }
-            catch (Exception) { }
-
-            OnCancelQueueRequested?.Invoke();
-        }
-
-        // Chỉ dừng Timer và ẩn giao diện chờ (dùng nội bộ khi đã khớp trận)
-        private void StopQueueWithoutDB()
-        {
-            isQueuing = false;
-            queueTimer?.Stop();
-            queueTimer?.Dispose();
-            queueTimer = null;
             queuePanel.Visible = false;
+            OnCancelQueueRequested?.Invoke();
         }
     }
 }

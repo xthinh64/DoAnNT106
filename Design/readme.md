@@ -67,9 +67,9 @@
 ### 3.3. Màn hình Sảnh chính (`DashboardForm`)
 - **Thanh Header**: Avatar chữ cái đại diện, Tên người chơi, Huy hiệu điểm Elo (`Elo: 1200`), Nút đổi theme, Nút Đăng xuất.
 - **Cột Trái - Chọn trò chơi & Chế độ thi đấu**:
-  1. **Cờ Vua (Chess 8x8)**: Huy hiệu `8x8 • Chiến thuật FIDE`, 2 nút hành động: *Đấu với Máy (Solo)* và *Tìm trận Đấu Rank*.
-  2. **Cờ Caro (Gomoku 15x15)**: Huy hiệu `15x15 • 5 Quân Thắng`, 2 nút hành động: *Đấu với Máy (Solo)* và *Tìm trận Đấu Rank*.
-  3. **Khu vực Hàng chờ Đấu Rank (Queue Panel)**: Tự động hiển thị khi bấm Tìm trận Đấu Rank kèm đồng hồ đếm giây (`00:15`), thanh trạng thái Marquee và nút Hủy tìm trận.
+  1. **Cờ Vua (Chess 8x8)**: Huy hiệu `8x8 • Chiến thuật FIDE`, chế độ *Đấu với Máy (Solo)* và nút Rank dành cho tích hợp sau.
+  2. **Cờ Caro (Gomoku 15x15)**: Huy hiệu `15x15 • 5 Quân Thắng`, chế độ *Đấu với Máy (Solo)* và nút Rank dành cho tích hợp sau.
+  3. **Đấu Rank**: Hiện hiển thị thông báo đang phát triển. Client không truy cập MySQL trực tiếp; cần session, hàng chờ và server gameplay trước khi bật tính năng.
 - **Cột Phải - Lịch sử thi đấu gần nhất**:
   - Thẻ hiển thị các trận gần nhất kèm huy hiệu phân loại `[Cờ Vua]` / `[Cờ Caro]`, kết quả Thắng/Thua/Hòa, đối thủ, điểm Elo biến động (`+18`, `-14`) và mốc thời gian.
 
