@@ -1,3 +1,5 @@
+using OnlineChessGame.Chess;
+
 namespace OnlineChessGame
 {
     public partial class DashboardForm : Form
@@ -202,7 +204,18 @@ namespace OnlineChessGame
 
         private void BtnSoloChess_Click(object? sender, EventArgs e)
         {
-            Program.Context.SwitchTo(new ChessBoardForm(playerName, elo, "Computer Chess", 1250, isSolo: true));
+            using var dialog = new ChessDifficultyDialog();
+            if (dialog.ShowDialog(this) != DialogResult.OK || dialog.SelectedDifficulty is null)
+                return;
+
+            ChessDifficulty difficulty = dialog.SelectedDifficulty;
+            Program.Context.SwitchTo(new ChessBoardForm(
+                playerName,
+                elo,
+                $"Stockfish - {difficulty.DisplayName}",
+                difficulty.DisplayElo,
+                isSolo: true,
+                difficulty));
         }
 
         private void BtnRankedChess_Click(object? sender, EventArgs e)

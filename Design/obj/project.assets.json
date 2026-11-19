@@ -2,6 +2,48 @@
   "version": 4,
   "targets": {
     "net8.0-windows": {
+      "Ardalis.SmartEnum/2.0.1": {
+        "type": "package",
+        "compile": {
+          "lib/netstandard2.0/Ardalis.SmartEnum.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/netstandard2.0/Ardalis.SmartEnum.dll": {
+            "related": ".xml"
+          }
+        }
+      },
+      "Gera.Chess/1.2.0": {
+        "type": "package",
+        "dependencies": {
+          "Ardalis.SmartEnum": "2.0.1"
+        },
+        "compile": {
+          "lib/net8.0/ChessLibrary.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net8.0/ChessLibrary.dll": {
+            "related": ".xml"
+          }
+        }
+      },
+      "OnlineChessGame.Chess/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v8.0",
+        "dependencies": {
+          "Gera.Chess": "1.2.0"
+        },
+        "compile": {
+          "bin/placeholder/OnlineChessGame.Chess.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/OnlineChessGame.Chess.dll": {}
+        }
+      },
       "OnlineChessGame.Network/1.0.0": {
         "type": "project",
         "framework": ".NETCoreApp,Version=v8.0",
@@ -15,6 +57,41 @@
     }
   },
   "libraries": {
+    "Ardalis.SmartEnum/2.0.1": {
+      "sha512": "tukxECzQuEXRGUzalYGF90CrD0hqW+308J3IaDKUoIavF3npUGVGn2ptumDSMIdZWInjPTlk3eJrrZuAePQbYA==",
+      "type": "package",
+      "path": "ardalis.smartenum/2.0.1",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "ardalis.smartenum.2.0.1.nupkg.sha512",
+        "ardalis.smartenum.nuspec",
+        "icon.png",
+        "lib/netstandard2.0/Ardalis.SmartEnum.dll",
+        "lib/netstandard2.0/Ardalis.SmartEnum.xml"
+      ]
+    },
+    "Gera.Chess/1.2.0": {
+      "sha512": "zinzizUTdkhGMMwt/f7J/AoldRvpbND5zBZrB9b8B/SLhi93lCrLnaQg5KAT4JUpDptNVUHtfggQIk6xQHD4kw==",
+      "type": "package",
+      "path": "gera.chess/1.2.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "LICENSE.md",
+        "README_NUGET.md",
+        "gera.chess.1.2.0.nupkg.sha512",
+        "gera.chess.nuspec",
+        "knight.png",
+        "lib/net8.0/ChessLibrary.dll",
+        "lib/net8.0/ChessLibrary.xml"
+      ]
+    },
+    "OnlineChessGame.Chess/1.0.0": {
+      "type": "project",
+      "path": "../Chess/OnlineChessGame.Chess.csproj",
+      "msbuildProject": "../Chess/OnlineChessGame.Chess.csproj"
+    },
     "OnlineChessGame.Network/1.0.0": {
       "type": "project",
       "path": "../Network/OnlineChessGame.Network.csproj",
@@ -23,6 +100,7 @@
   },
   "projectFileDependencyGroups": {
     "net8.0-windows": [
+      "OnlineChessGame.Chess >= 1.0.0",
       "OnlineChessGame.Network >= 1.0.0"
     ]
   },
@@ -54,6 +132,9 @@
           "framework": "net8.0-windows7.0",
           "targetAlias": "net8.0-windows",
           "projectReferences": {
+            "Q:\\DoAnNT106\\Chess\\OnlineChessGame.Chess.csproj": {
+              "projectPath": "Q:\\DoAnNT106\\Chess\\OnlineChessGame.Chess.csproj"
+            },
             "Q:\\DoAnNT106\\Network\\OnlineChessGame.Network.csproj": {
               "projectPath": "Q:\\DoAnNT106\\Network\\OnlineChessGame.Network.csproj"
             }

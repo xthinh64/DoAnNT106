@@ -79,6 +79,38 @@ cd /mnt/q/DoAnNT106
 
 **Kết quả cần thấy:** `dotnet --info` hiển thị SDK Windows và không báo thiếu `host/fxr`.
 
+### Cài Stockfish cho chế độ Cờ vua — Đấu với máy
+
+Thực hiện một lần trong Windows PowerShell tại thư mục gốc dự án:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-stockfish.ps1
+dotnet build .\Design\OnlineChessGame.csproj
+```
+
+Script tải Stockfish Windows x64 chính thức và tạo file
+`Engines\Stockfish\stockfish.exe`. Khi build, engine được sao chép tới
+`Design\bin\Debug\net8.0-windows\Engines\Stockfish\stockfish.exe`.
+
+Khi vào sảnh và chọn **Đấu với Máy (Solo)** ở phần Cờ vua, ứng dụng cho chọn
+bốn mức: Dễ, Trung bình, Khó và Chuyên gia. Nếu ứng dụng báo không tìm thấy
+Stockfish, kiểm tra file trên đã tồn tại rồi build/chạy lại client:
+
+```powershell
+dotnet run --project .\Design\OnlineChessGame.csproj
+```
+
+Nếu muốn đặt engine ở thư mục khác:
+
+```powershell
+$env:STOCKFISH_PATH = "C:\duong-dan\stockfish.exe"
+dotnet run --project .\Design\OnlineChessGame.csproj
+```
+
+Stockfish chạy cục bộ, không cần tài khoản, API key, database hoặc Internet
+trong lúc chơi. Khi phân phối binary, giữ kèm `Copying.txt`, `AUTHORS` và mã
+nguồn/liên kết mã nguồn đúng phiên bản theo GPL v3.
+
 ## Bước 2 — Cài và khởi động MySQL
 
 **Thực hiện trên máy A. Nếu MySQL Server đã chạy, kiểm tra cổng rồi sang bước 3.**
@@ -411,7 +443,7 @@ Hướng dẫn mở rộng, gồm publish client tự chứa runtime cho máy kh
 | Gateway và worker | Round-robin theo kết nối, gateway chuyển tiếp TLS tới hai worker loopback; fallback nếu chưa kết nối TCP được tới worker | Ba listener cùng một tiến trình; chưa có health check định kỳ hoặc gateway dự phòng |
 | Quản trị server | WinForms: cấu hình IP/cổng, PFX và MySQL; tạo PFX; kiểm tra schema auth; khởi động/dừng; sao chép certificate pin; bộ đếm và nhật ký | Quản lý instance do chính cửa sổ khởi chạy; chưa có điều khiển server console từ xa hoặc CRUD tài khoản/phòng/trận |
 | Client | Đăng nhập, đăng ký, sảnh, bàn cờ vua/caro; giao diện sáng/tối; không giữ thông tin DB | Gameplay online chưa có session và transport riêng |
-| Cờ vua cục bộ | Bàn 8×8, nước đi cơ bản, bắt quân, phong hậu, bot đơn giản và đồng hồ | Chưa hoàn thiện an toàn vua, chiếu/chiếu bí, nhập thành, en passant và các luật hòa |
+| Cờ vua cục bộ | Luật hợp lệ đầy đủ bằng Gera.Chess; chiếu/chiếu bí, nhập thành, en passant, chọn quân phong cấp, các luật hòa; Stockfish 4 mức khó | Stockfish phải được cài một lần bằng script; gameplay Rank/LAN vẫn đang phát triển |
 | Caro cục bộ | Bàn 15×15, kiểm tra từ 5 quân liên tiếp theo bốn hướng, bot đơn giản và đồng hồ | Chưa có xác nhận luật/kết quả trên server |
 | Hàng chờ và trận | Có nút UI và schema dự kiến | Nút Rank hiện báo đang phát triển; chưa có hàng chờ hoặc trận được server quản lý |
 | Chat, lịch sử và Elo | Có UI/event chat, schema và một phần lưu kết quả cờ vua | Chưa có transport chat liên máy; lịch sử sảnh đang dùng dữ liệu mẫu; kết quả/Elo chưa thống nhất mọi nhánh |
@@ -446,6 +478,9 @@ Gateway và hai worker chạy trong **cùng tiến trình**. Có thể chọn m�
 ```text
 OnlineChessGame.slnx        Solution chung: client, hai server, thư viện và test
 Design/                    Client WinForms .NET 8 Windows
+Chess/                     Luật cờ vua chuẩn, cấu hình độ khó và UCI Stockfish
+Engines/Stockfish/         Binary local, giấy phép và hướng dẫn cài engine
+scripts/setup-stockfish.ps1 Tải Stockfish Windows x64 chính thức
 Server/                    Chương trình server console
 ServerManager/             Giao diện vận hành/quản trị server WinForms
 Network/                   TCP/TLS, AuthClient, AuthCluster, hợp đồng JSON
@@ -454,6 +489,7 @@ onlinedb/game_auth.sql      Schema onlinechessdb
 Tests/AuthTests/           Test nghiệp vụ xác thực, hash, admission và MySQL
 Tests/TransportTests/      Test transport, TLS, phân tải, shutdown và bộ đếm kết nối
 Tests/ServerManagerTests/  Test bộ đếm/nhật ký của giao diện server
+Tests/ChessTests/          Test luật cờ và bắt tay Stockfish UCI
 Tests/test_*.py            Kiểm tra cấu trúc nối UI và entrypoint
 BaoCao/                    Báo cáo Word đã tạo
 AUTH-SERVER.md             Tài liệu kỹ thuật nền: auth, LAN và các phần cần hoàn thiện
@@ -472,6 +508,7 @@ AUTH-SERVER.md             Tài liệu kỹ thuật nền: auth, LAN và các ph
 | `AUTH_ALLOW_LEGACY_MIGRATION` | Console / UI server | Chỉ `true` mới bật chuyển mật khẩu cũ; mặc định tắt |
 | `CHESS_AUTH_ENDPOINT` | Client | `host:port`; mặc định `127.0.0.1:8888` |
 | `CHESS_CERT_PIN` | Client | 64 ký tự hex SHA-256 DER chứng chỉ server |
+| `STOCKFISH_PATH` | Client | Tùy chọn: đường dẫn đầy đủ tới `stockfish.exe` nếu không dùng thư mục Engines |
 | `AUTH_TEST_MYSQL` | Test | Instance MySQL dùng một lần cho test tích hợp |
 
 Cổng của UI được chọn trực tiếp trên form. Server console vẫn dùng cố định 8888/9001/9002. Không có biến môi trường đổi cổng console.
