@@ -1,0 +1,10 @@
+<Solution>
+  <Project Path="Design/OnlineChessGame.csproj" />
+  <Project Path="Server/OnlineChessGame.Server.csproj" />
+  <Project Path="ServerManager/OnlineChessGame.ServerManager.csproj" />
+  <Project Path="Network/OnlineChessGame.Network.csproj" />
+  <Project Path="Auth/OnlineChessGame.Auth.csproj" />
+  <Project Path="Tests/AuthTests/AuthTests.csproj" />
+  <Project Path="Tests/TransportTests/TransportTests.csproj" />
+  <Project Path="Tests/ServerManagerTests/ServerManagerTests.csproj" />
+</Solution>
