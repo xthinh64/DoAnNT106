@@ -27,5 +27,22 @@ class AuthUiContract(unittest.TestCase):
         self.assertIn('CHESS_CERT_PIN', source)
         self.assertNotIn('Password', source)
 
+    def test_game_client_has_no_database_credentials_or_direct_mysql_access(self):
+        sources = '\n'.join(
+            path.read_text(encoding='utf-8-sig')
+            for path in (ROOT / 'Design').glob('*.cs')
+        )
+        project = (ROOT / 'Design/OnlineChessGame.csproj').read_text(encoding='utf-8-sig')
+        self.assertNotIn('MySql', sources)
+        self.assertNotIn('Pwd=', sources)
+        self.assertNotIn('MySql.Data', project)
+
+    def test_ranked_ui_is_honest_until_gameplay_server_exists(self):
+        dashboard = (ROOT / 'Design/DashboardForm.cs').read_text(encoding='utf-8-sig')
+        self.assertIn('Đấu Rank chưa được kết nối với server gameplay', dashboard)
+        self.assertNotIn('MatchmakingQueue', dashboard)
+        chess = (ROOT / 'Design/ChessBoardForm.cs').read_text(encoding='utf-8-sig')
+        self.assertNotIn('SaveGameResultToDatabase', chess)
+
 if __name__ == '__main__':
     unittest.main()

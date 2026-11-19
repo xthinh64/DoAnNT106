@@ -232,7 +232,7 @@ Admission nằm trước nghiệp vụ để giới hạn cả băm đồng bộ
 
 Auth dùng trực tiếp hai bảng Users và UserGameStats. Schema đồ án còn có Rooms, RoomMembers, Matches, MatchPlayers, RoomMessages và MatchmakingQueue.
 
-Việc tồn tại các bảng không chứng minh đã có server quản lý phòng hoặc trận đấu. Luồng Dashboard/ChessBoard cũ còn truy vấn MySQL trực tiếp; vì vậy ứng dụng chưa đạt mô hình client không biết thông tin DB.
+Việc tồn tại các bảng không chứng minh đã có server quản lý phòng hoặc trận đấu. Truy cập MySQL trực tiếp từng tồn tại trong Dashboard/ChessBoard đã được loại khỏi client; nút Rank hiện thông báo chưa có server gameplay thay vì tạo một hàng chờ không đồng bộ.
 
 Yêu cầu triển khai:
 
@@ -410,7 +410,7 @@ Các chức năng cục bộ và dữ liệu schema không đồng nghĩa với 
 | Giao diện | Login, Register, Dashboard, ChessBoard, CaroBoard; theme sáng/tối | Kiểm thử GUI tự động, hiển thị trạng thái mạng/phiên thống nhất |
 | Cờ vua cục bộ | Bàn 8×8, di chuyển cơ bản, phong hậu, bot đơn giản, đồng hồ | Bộ luật quốc tế đầy đủ: king safety, chiếu/chiếu bí, nhập thành, en passant, các trường hợp hòa |
 | Caro cục bộ | Bàn 15×15, kiểm tra chuỗi thắng, bot đơn giản | Luật và kết quả được server xác nhận, tích hợp kết quả DB thống nhất |
-| Sảnh và matchmaking | UI và logic DB cũ, bảng hàng chờ | Ghép hai client vào cùng trận qua server, phân màu, ready và thông báo hai phía |
+| Sảnh và matchmaking | UI và schema dự kiến; nút Rank báo đang phát triển | Ghép hai client vào cùng trận qua server, phân màu, ready và thông báo hai phía |
 | Chat và nước đi | Có các điểm nối/event phía form | Transport gameplay/chat và đồng bộ giữa hai máy |
 | Lịch sử và Elo | Schema; một phần lưu kết quả và cập nhật Elo cũ | Lịch sử sảnh còn dữ liệu mẫu; kết quả mọi nhánh/game chưa thống nhất |
 
@@ -466,9 +466,9 @@ Cần giới hạn chat, kiểm tra thành viên phòng, ping/pong hoặc cơ ch
 
 ### 12.7. Loại truy cập DB trực tiếp từ client
 
-Dashboard/ChessBoard cũ còn truy vấn DB; tài khoản DB trong client phá ranh giới tin cậy dù auth đã dùng TLS.
+Truy vấn DB và credential hardcode cũ đã được loại khỏi Dashboard/ChessBoard. Client hiện không tham chiếu MySQL; ranh giới này cần được giữ khi bổ sung gameplay.
 
-Cần API server cho hàng chờ, lịch sử, thống kê và kết quả, sau đó loại connection string/dependency DB khỏi client khi không còn sử dụng. Tiêu chí hoàn thành là client chạy mà không có DB credential và không truy cập được cổng DB.
+Cần API server cho hàng chờ, lịch sử, thống kê và kết quả; không đưa connection string/dependency DB trở lại client. Client hiện chạy không có DB credential, nhưng các API gameplay tương ứng chưa được triển khai.
 
 ### 12.8. Hoàn thiện bảo mật và vận hành
 
@@ -493,10 +493,10 @@ Kết quả dưới được ghi nhận trong đợt triển khai trước khi v
 | Hạng mục | Kết quả ghi nhận | Phạm vi |
 |---|---|---|
 | AuthTests với MariaDB tạm | 29 đạt, 0 lỗi, 0 bỏ qua | Hash, admission, transaction, trùng đồng thời, migration, profile/Elo |
-| TransportTests bản cuối | 25 đạt, 0 lỗi, 0 bỏ qua | TLS thật qua loopback, pin sai, binding, JSON lỗi, phản hồi thiếu trường, shutdown |
-| Kiểm tra nguồn Python | 6 đạt | Quy ước nối UI và entrypoint, không phải GUI test |
+| TransportTests bản cuối | 27 đạt, 0 lỗi, 0 bỏ qua | TLS thật qua loopback, pin sai, binding, JSON lỗi, shutdown và metric kết nối |
+| Kiểm tra nguồn Python | 8 đạt | Quy ước nối UI/entrypoint và cấm client truy cập DB; không phải GUI test |
 | Build server | 0 lỗi, 0 cảnh báo | Biên dịch server và thư viện |
-| Build WinForms | 0 lỗi, 7 cảnh báo | Biên dịch, không chứng minh thao tác UI |
+| Build WinForms | 0 lỗi, 2 cảnh báo event chưa dùng | Biên dịch sau khi loại MySql.Data khỏi client; không chứng minh thao tác UI |
 | LAN ba máy vật lý | Chưa xác minh | Cần thực hiện kịch bản mục 9.7 |
 | Game online hai người | Chưa có luồng đầy đủ | Không nằm trong bằng chứng test auth |
 

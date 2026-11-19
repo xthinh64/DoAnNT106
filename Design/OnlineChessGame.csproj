@@ -18,7 +18,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../Network/OnlineChessGame.Network.csproj" />
-    <PackageReference Include="MySql.Data" Version="26.10.0" />
   </ItemGroup>
 
 </Project>

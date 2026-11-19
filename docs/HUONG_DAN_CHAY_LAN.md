@@ -337,4 +337,4 @@ $env:CHESS_CERT_PIN = Read-Host 'Dan pin SHA-256 tu ServerManager'
 .\OnlineChessGame.exe
 ```
 
-Bản này chứa runtime, không cần cài SDK trên máy client. Vẫn cần đặt endpoint và pin trước khi chạy. Luồng hàng chờ/lưu trận MySQL cũ trong client chưa được chuyển hoàn toàn sang server; bản publish không làm các luồng đó trở thành gameplay LAN đầy đủ.
+Bản này chứa runtime, không cần cài SDK trên máy client. Vẫn cần đặt endpoint và pin trước khi chạy. Nút Đấu Rank hiện báo đang phát triển; bản publish không làm gameplay LAN trở thành hoàn chỉnh khi server chưa có session, hàng chờ và đồng bộ trận.

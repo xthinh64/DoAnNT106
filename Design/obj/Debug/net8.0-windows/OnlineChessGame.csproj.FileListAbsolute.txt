@@ -40,3 +40,26 @@ D:\Microsoft VS Code\DoANNT106\Design\obj\Debug\net8.0-windows\refint\OnlineChes
 D:\Microsoft VS Code\DoANNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.pdb
 D:\Microsoft VS Code\DoANNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.genruntimeconfig.cache
 D:\Microsoft VS Code\DoANNT106\Design\obj\Debug\net8.0-windows\ref\OnlineChessGame.dll
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\OnlineChessGame.exe
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\OnlineChessGame.deps.json
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\OnlineChessGame.runtimeconfig.json
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\OnlineChessGame.dll
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\OnlineChessGame.pdb
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\OnlineChessGame.Network.dll
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\OnlineChessGame.Network.pdb
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.csproj.AssemblyReference.cache
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.CaroBoardForm.resources
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.ChessBoardForm.resources
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.DashboardForm.resources
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.csproj.GenerateResource.cache
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.GeneratedMSBuildEditorConfig.editorconfig
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.AssemblyInfoInputs.cache
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.AssemblyInfo.cs
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.csproj.CoreCompileInputs.cache
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.sourcelink.json
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineCh.7C5D06BC.Up2Date
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.dll
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\refint\OnlineChessGame.dll
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.pdb
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.genruntimeconfig.cache
+Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\ref\OnlineChessGame.dll
