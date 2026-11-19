@@ -21,12 +21,16 @@ public sealed class AuthCluster : IAsyncDisposable
     private readonly List<Task> loops = new();
     private CancellationTokenRegistration registration;
     private long sequence, worker1Requests, worker2Requests;
+    private int activeGatewayConnections, activeWorker1Connections, activeWorker2Connections;
     private int route, state;
     public int GatewayPort => ((IPEndPoint)gateway.LocalEndpoint).Port;
     public int Worker1Port => ((IPEndPoint)worker1.LocalEndpoint).Port;
     public int Worker2Port => ((IPEndPoint)worker2.LocalEndpoint).Port;
     public long Worker1Requests => Interlocked.Read(ref worker1Requests);
     public long Worker2Requests => Interlocked.Read(ref worker2Requests);
+    public int ActiveGatewayConnections => Volatile.Read(ref activeGatewayConnections);
+    public int ActiveWorker1Connections => Volatile.Read(ref activeWorker1Connections);
+    public int ActiveWorker2Connections => Volatile.Read(ref activeWorker2Connections);
 
     public AuthCluster(IAuthService service, X509Certificate2 certificate, int gatewayPort = 8888, int worker1Port = 9001, int worker2Port = 9002, IPAddress? bindAddress = null)
     {
@@ -46,9 +50,9 @@ public sealed class AuthCluster : IAsyncDisposable
         {
             worker1.Start(128); worker2.Start(128); gateway.Start(128);
             registration = ct.Register(() => stop.Cancel());
-            loops.Add(AcceptAsync(worker1, worker1Slots, tcp => WorkerAsync(tcp, true)));
-            loops.Add(AcceptAsync(worker2, worker2Slots, tcp => WorkerAsync(tcp, false)));
-            loops.Add(AcceptAsync(gateway, gatewaySlots, GatewayAsync));
+            loops.Add(AcceptAsync(worker1, worker1Slots, tcp => TrackWorkerAsync(tcp, true)));
+            loops.Add(AcceptAsync(worker2, worker2Slots, tcp => TrackWorkerAsync(tcp, false)));
+            loops.Add(AcceptAsync(gateway, gatewaySlots, TrackGatewayAsync));
             return Task.CompletedTask;
         }
         catch { stop.Cancel(); gateway.Stop(); worker1.Stop(); worker2.Stop(); throw; }
@@ -87,6 +91,23 @@ public sealed class AuthCluster : IAsyncDisposable
         var cts = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
         cts.CancelAfter(TimeSpan.FromSeconds(10));
         return cts;
+    }
+    private async Task TrackGatewayAsync(TcpClient tcp)
+    {
+        Interlocked.Increment(ref activeGatewayConnections);
+        try { await GatewayAsync(tcp); }
+        finally { Interlocked.Decrement(ref activeGatewayConnections); }
+    }
+    private async Task TrackWorkerAsync(TcpClient tcp, bool first)
+    {
+        if (first) Interlocked.Increment(ref activeWorker1Connections);
+        else Interlocked.Increment(ref activeWorker2Connections);
+        try { await WorkerAsync(tcp, first); }
+        finally
+        {
+            if (first) Interlocked.Decrement(ref activeWorker1Connections);
+            else Interlocked.Decrement(ref activeWorker2Connections);
+        }
     }
     private async Task WorkerAsync(TcpClient tcp, bool first)
     {
