@@ -7,6 +7,7 @@ using OnlineChessGame.Server;
 
 try
 {
+    EnvironmentFile.LoadForServer();
     string certPath = Required("CHESS_CERT_PATH");
     string certPassword = Required("CHESS_CERT_PASSWORD");
     if (args is ["--create-cert"])

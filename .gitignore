@@ -11,3 +11,4 @@ Engines/Stockfish/*.exe
 *.key
 .env
 .env.*
+Design/client-config.json

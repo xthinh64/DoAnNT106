@@ -2,6 +2,10 @@
 
 Đồ án cuối kỳ môn **Lập trình mạng căn bản**, nhóm 7. Ứng dụng gồm client C# WinForms, server xác thực TCP/TLS, giao diện quản trị server và cơ sở dữ liệu MySQL.
 
+Để đóng gói cho người dùng tải từ GitHub và triển khai server trên VPS Linux,
+xem [hướng dẫn phát hành](docs/PHAT_HANH_VPS.md). Bản phát hành Windows chứa
+sẵn .NET runtime và Stockfish; máy người chơi không cần chạy script cài engine.
+
 **Hiện trạng:** đăng ký/đăng nhập qua server đã được tích hợp; có giao diện và chế độ chơi cục bộ cho hai trò chơi. Luồng thi đấu trực tuyến giữa hai máy, chat qua mạng và session sau đăng nhập **chưa hoàn chỉnh**.
 
 ## Thành viên
@@ -202,6 +206,12 @@ Nếu báo user đã tồn tại, không chạy lại `CREATE USER`. Nếu báo 
 ## Bước 5 — Mở ServerManager và kết nối database
 
 **Thực hiện trong PowerShell trên máy A, tại thư mục source.**
+
+Nếu đã tạo `.env` tại thư mục gốc dự án với dòng `CHESS_DB_CONNECTION="..."`,
+ServerManager tự nạp chuỗi kết nối vào ô **Chuỗi kết nối MySQL** lúc mở cửa sổ.
+Không cần đặt `$env:CHESS_DB_CONNECTION` bằng tay. File `.env` không được đưa lên
+Git; khi chuyển sang máy khác, tạo lại file trên máy chạy server. Biến môi trường
+đã đặt trong Windows/PowerShell sẽ được ưu tiên hơn giá trị trong file.
 
 ```powershell
 dotnet run --project ServerManager/OnlineChessGame.ServerManager.csproj
@@ -515,7 +525,10 @@ Cổng của UI được chọn trực tiếp trên form. Server console vẫn d
 
 ## Chạy server console thay cho UI (tùy chọn)
 
-Nếu mới thiết lập, dùng ServerManager theo các bước trên. Console dùng cùng thư viện auth nhưng đọc cấu hình từ biến môi trường; không tự lấy giá trị đang nhập trên UI. Với PFX và tài khoản DB đã có, mở Windows PowerShell tại repository:
+Nếu mới thiết lập, dùng ServerManager theo các bước trên. Console cũng tự nạp `.env`
+từ thư mục gốc dự án hoặc cạnh file chạy, nhưng vẫn cần `CHESS_CERT_PATH` và
+`CHESS_CERT_PASSWORD` để dùng PFX. Với PFX và tài khoản DB đã có, mở Windows
+PowerShell tại repository:
 
 ```powershell
 $env:CHESS_BIND_ADDRESS = '127.0.0.1'  # Đổi sang IP LAN thật để nhận client khác máy.
