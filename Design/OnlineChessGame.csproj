@@ -18,6 +18,15 @@
 
   <ItemGroup>
     <ProjectReference Include="../Network/OnlineChessGame.Network.csproj" />
+    <ProjectReference Include="../Chess/OnlineChessGame.Chess.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="../Engines/Stockfish/**" Condition="Exists('../Engines/Stockfish')">
+      <Link>Engines/Stockfish/%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

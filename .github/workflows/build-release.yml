@@ -1,0 +1,98 @@
+name: Build downloadable client and Linux server
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Public GitHub Release tag, for example v1.0.0"
+        required: true
+        type: string
+      server_endpoint:
+        description: "Public VPS host:port, for example chess.example.com:8888"
+        required: true
+        type: string
+      certificate_pin:
+        description: "SHA-256 DER certificate pin from the running server (64 hex characters)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  client:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Download official Stockfish binary
+        shell: pwsh
+        run: ./scripts/setup-stockfish.ps1
+      - name: Test chess and Stockfish integration
+        shell: pwsh
+        run: dotnet test Tests/ChessTests/ChessTests.csproj --configuration Release
+      - name: Publish self-contained Windows client
+        shell: pwsh
+        run: dotnet publish Design/OnlineChessGame.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=false --output release/client
+      - name: Add deployment settings and verify package
+        shell: pwsh
+        env:
+          RELEASE_ENDPOINT: ${{ inputs.server_endpoint }}
+          RELEASE_PIN: ${{ inputs.certificate_pin }}
+        run: |
+          if ($env:RELEASE_ENDPOINT -notmatch '^[^:\s/]+:[0-9]{1,5}$') { throw 'server_endpoint must be host:port' }
+          if ($env:RELEASE_PIN -notmatch '^[0-9a-fA-F]{64}$') { throw 'certificate_pin must contain 64 hex characters' }
+          $config = @{ endpoint = $env:RELEASE_ENDPOINT; certificatePin = $env:RELEASE_PIN.ToUpperInvariant() }
+          $config | ConvertTo-Json | Set-Content -Path release/client/client-config.json -Encoding utf8
+          if (-not (Test-Path release/client/Engines/Stockfish/stockfish.exe)) { throw 'Stockfish binary is missing from publish output' }
+          if (-not (Test-Path release/client/Engines/Stockfish/Copying.txt)) { throw 'Stockfish license is missing from publish output' }
+          if (-not (Test-Path release/client/OnlineChessGame.exe)) { throw 'Client executable is missing from publish output' }
+          Compress-Archive -Path release/client/* -DestinationPath release/OnlineChessGame-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OnlineChessGame-Windows-x64
+          path: release/OnlineChessGame-Windows-x64.zip
+          if-no-files-found: error
+
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Publish self-contained Linux auth server
+        run: dotnet publish Server/OnlineChessGame.Server.csproj --configuration Release --runtime linux-x64 --self-contained true --output release/server
+      - name: Add server configuration template
+        run: |
+          cp docs/server.env.example release/server/server.env.example
+          tar -czf release/OnlineChessGame-Server-Linux-x64.tar.gz -C release/server .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OnlineChessGame-Server-Linux-x64
+          path: release/OnlineChessGame-Server-Linux-x64.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [client, server]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: OnlineChessGame-*
+          path: release
+          merge-multiple: true
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'release_tag must look like v1.0.0' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" release/OnlineChessGame-Windows-x64.zip release/OnlineChessGame-Server-Linux-x64.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Online Chess Game $RELEASE_TAG" \
+            --notes 'Windows client includes .NET and Stockfish. Deploy the Linux server first and configure its local .env file.'

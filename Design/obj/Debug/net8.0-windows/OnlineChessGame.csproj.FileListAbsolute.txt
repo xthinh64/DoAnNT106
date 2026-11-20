@@ -63,3 +63,12 @@ Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\refint\OnlineChessGame.dll
 Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.pdb
 Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\OnlineChessGame.genruntimeconfig.cache
 Q:\DoAnNT106\Design\obj\Debug\net8.0-windows\ref\OnlineChessGame.dll
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\Engines\Stockfish\README.md
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\Ardalis.SmartEnum.dll
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\ChessLibrary.dll
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\OnlineChessGame.Chess.dll
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\OnlineChessGame.Chess.pdb
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\Engines\Stockfish\AUTHORS
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\Engines\Stockfish\Copying.txt
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\Engines\Stockfish\stockfish.exe
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\Engines\Stockfish\SETUP.md

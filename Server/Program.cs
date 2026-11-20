@@ -3,9 +3,11 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using OnlineChessGame.Auth;
 using OnlineChessGame.Network;
+using OnlineChessGame.Server;
 
 try
 {
+    EnvironmentFile.LoadForServer();
     string certPath = Required("CHESS_CERT_PATH");
     string certPassword = Required("CHESS_CERT_PASSWORD");
     if (args is ["--create-cert"])
@@ -38,6 +40,13 @@ try
     await cluster.StartAsync(stop.Token);
     Console.WriteLine($"Auth ready: gateway {bind}:{cluster.GatewayPort}; workers {cluster.Worker1Port}/{cluster.Worker2Port}");
     Console.WriteLine($"CHESS_CERT_PIN={Convert.ToHexString(SHA256.HashData(certificate.RawData))}");
+
+    // Game Server chạy cổng 9000 song song với AuthCluster
+    int gamePort = int.TryParse(Environment.GetEnvironmentVariable("CHESS_GAME_PORT"), out int gp) ? gp : 9000;
+    await using var gameServer = new GameServer(bind, gamePort);
+    gameServer.Start(stop.Token);
+    Console.WriteLine($"Game ready: {bind}:{gameServer.Port}");
+
     try { await Task.Delay(Timeout.Infinite, stop.Token); }
     catch (OperationCanceledException) { }
     Console.WriteLine($"Stopped. Worker requests: {cluster.Worker1Requests}/{cluster.Worker2Requests}");

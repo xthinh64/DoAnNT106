@@ -1,3 +1,6 @@
+using Chess;
+using OnlineChessGame.Chess;
+
 namespace OnlineChessGame
 {
     public partial class ChessBoardForm : Form
@@ -21,6 +24,14 @@ namespace OnlineChessGame
         private bool isWhiteTurn = true; // Trắng đi trước
         private bool gameOver = false;
         private bool isSolo = true;
+        private bool botThinking;
+        private bool engineWarningShown;
+        private readonly ChessGameState chessState = new();
+        private ChessDifficulty difficulty = ChessDifficulty.Medium;
+        private StockfishClient? stockfish;
+        private readonly CancellationTokenSource lifetimeCancellation = new();
+        private bool engineResourcesDisposed;
+        private IReadOnlyList<string> selectedLegalMoves = Array.Empty<string>();
 
         // Thông tin người chơi
         private string p1Name = "Kỳ thủ VN";
@@ -37,6 +48,7 @@ namespace OnlineChessGame
 
         // === EVENT: Network Hooks sẵn sàng nối Socket TCP ===
         public event Action<int, int, int, int>? OnChessMoveMade;
+        public event Action<string>? OnChessUciMoveMade;
         public event Action<string>? OnChatSent;
         public event Action? OnSurrender;
         public event Action? OnDrawRequest;
@@ -52,23 +64,32 @@ namespace OnlineChessGame
             ApplyCurrentTheme();
         }
 
-        public ChessBoardForm(string p1, int elo1, string p2, int elo2, bool isSolo) : this()
+        public ChessBoardForm(
+            string p1,
+            int elo1,
+            string p2,
+            int elo2,
+            bool isSolo,
+            ChessDifficulty? difficulty = null) : this()
         {
             this.p1Name = p1;
             this.p1Elo = elo1;
             this.p2Name = p2;
             this.p2Elo = elo2;
             this.isSolo = isSolo;
+            this.difficulty = difficulty ?? ChessDifficulty.Medium;
 
             UpdatePlayerHeaders();
             StartGameTimer();
         }
 
-        private void ChessBoardForm_Load(object? sender, EventArgs e)
+        private async void ChessBoardForm_Load(object? sender, EventArgs e)
         {
             UpdatePlayerHeaders();
             ApplyCardRegions();
             AddChatMessage("He thong", "Tran dau Co Vua da bat dau. Chuc 2 ky thu thi dau tot!");
+            if (isSolo)
+                await EnsureStockfishReadyAsync(showError: true);
         }
 
         private static void EnableDoubleBuffering(Control c)
@@ -80,21 +101,7 @@ namespace OnlineChessGame
 
         private void SetupInitialBoard()
         {
-            for (int r = 0; r < BOARD_SIZE; r++)
-                for (int c = 0; c < BOARD_SIZE; c++)
-                    board[r, c] = 0;
-
-            // Đen (Hàng 0 và hàng 1)
-            board[0, 0] = -4; board[0, 1] = -2; board[0, 2] = -3; board[0, 3] = -5;
-            board[0, 4] = -6; board[0, 5] = -3; board[0, 6] = -2; board[0, 7] = -4;
-            for (int c = 0; c < BOARD_SIZE; c++) board[1, c] = -1;
-
-            // Trắng (Hàng 6 và hàng 7)
-            for (int c = 0; c < BOARD_SIZE; c++) board[6, c] = 1;
-            board[7, 0] = 4; board[7, 1] = 2; board[7, 2] = 3; board[7, 3] = 5;
-            board[7, 4] = 6; board[7, 5] = 3; board[7, 6] = 2; board[7, 7] = 4;
-
-            isWhiteTurn = true;
+            SyncBoardFromFen();
             gameOver = false;
         }
 
@@ -325,7 +332,7 @@ namespace OnlineChessGame
 
         private void BoardPanel_Click(object? sender, MouseEventArgs e)
         {
-            if (gameOver) return;
+            if (gameOver || botThinking) return;
             if (!isWhiteTurn && isSolo) return;
 
             int col = (e.X - MARGIN) / CELL;
@@ -345,215 +352,265 @@ namespace OnlineChessGame
             if (isMyPiece)
             {
                 selectedSquare = (row, col);
-                validMoves = ComputeBasicMoves(row, col);
+                selectedLegalMoves = chessState.GetLegalMovesFrom(row, col);
+                validMoves = selectedLegalMoves
+                    .Select(move => ChessGameState.SquareToCoordinates(move.AsSpan(2, 2)))
+                    .Select(position => (position.Row, position.Column))
+                    .Distinct()
+                    .ToList();
                 boardPanel.Invalidate();
             }
             else
             {
                 selectedSquare = null;
+                selectedLegalMoves = Array.Empty<string>();
                 validMoves.Clear();
                 boardPanel.Invalidate();
             }
         }
 
-        private List<(int r, int c)> ComputeBasicMoves(int r, int c)
-        {
-            var moves = new List<(int r, int c)>();
-            int piece = board[r, c];
-            if (piece == 0) return moves;
-
-            bool isWhite = piece > 0;
-            int type = Math.Abs(piece);
-
-            switch (type)
-            {
-                case 1: // Tốt
-                    int dir = isWhite ? -1 : 1;
-                    int startRow = isWhite ? 6 : 1;
-
-                    if (IsInside(r + dir, c) && board[r + dir, c] == 0)
-                    {
-                        moves.Add((r + dir, c));
-                        if (r == startRow && board[r + 2 * dir, c] == 0)
-                            moves.Add((r + 2 * dir, c));
-                    }
-                    if (IsInside(r + dir, c - 1) && IsEnemy(isWhite, r + dir, c - 1))
-                        moves.Add((r + dir, c - 1));
-                    if (IsInside(r + dir, c + 1) && IsEnemy(isWhite, r + dir, c + 1))
-                        moves.Add((r + dir, c + 1));
-                    break;
-
-                case 2: // Mã
-                    int[][] knightD = {
-                        new[] {-2, -1}, new[] {-2, 1}, new[] {-1, -2}, new[] {-1, 2},
-                        new[] {1, -2}, new[] {1, 2}, new[] {2, -1}, new[] {2, 1}
-                    };
-                    foreach (var d in knightD)
-                    {
-                        int nr = r + d[0], nc = c + d[1];
-                        if (IsInside(nr, nc) && CanLand(isWhite, nr, nc))
-                            moves.Add((nr, nc));
-                    }
-                    break;
-
-                case 3: // Tượng
-                    AddLineMoves(moves, isWhite, r, c, new[] { -1, -1 });
-                    AddLineMoves(moves, isWhite, r, c, new[] { -1, 1 });
-                    AddLineMoves(moves, isWhite, r, c, new[] { 1, -1 });
-                    AddLineMoves(moves, isWhite, r, c, new[] { 1, 1 });
-                    break;
-
-                case 4: // Xe
-                    AddLineMoves(moves, isWhite, r, c, new[] { -1, 0 });
-                    AddLineMoves(moves, isWhite, r, c, new[] { 1, 0 });
-                    AddLineMoves(moves, isWhite, r, c, new[] { 0, -1 });
-                    AddLineMoves(moves, isWhite, r, c, new[] { 0, 1 });
-                    break;
-
-                case 5: // Hậu
-                    int[][] queenD = {
-                        new[] {-1, 0}, new[] {1, 0}, new[] {0, -1}, new[] {0, 1},
-                        new[] {-1, -1}, new[] {-1, 1}, new[] {1, -1}, new[] {1, 1}
-                    };
-                    foreach (var d in queenD) AddLineMoves(moves, isWhite, r, c, d);
-                    break;
-
-                case 6: // Vua
-                    for (int dr = -1; dr <= 1; dr++)
-                        for (int dc = -1; dc <= 1; dc++)
-                        {
-                            if (dr == 0 && dc == 0) continue;
-                            int nr = r + dr, nc = c + dc;
-                            if (IsInside(nr, nc) && CanLand(isWhite, nr, nc))
-                                moves.Add((nr, nc));
-                        }
-                    break;
-            }
-
-            return moves;
-        }
-
-        private void AddLineMoves(List<(int r, int c)> moves, bool isWhite, int r, int c, int[] dir)
-        {
-            int nr = r + dir[0], nc = c + dir[1];
-            while (IsInside(nr, nc))
-            {
-                if (board[nr, nc] == 0)
-                {
-                    moves.Add((nr, nc));
-                }
-                else
-                {
-                    if (IsEnemy(isWhite, nr, nc)) moves.Add((nr, nc));
-                    break;
-                }
-                nr += dir[0];
-                nc += dir[1];
-            }
-        }
-
-        private bool IsInside(int r, int c) => r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE;
-        private bool IsEnemy(bool isWhite, int r, int c) => isWhite ? board[r, c] < 0 : board[r, c] > 0;
-        private bool CanLand(bool isWhite, int r, int c) => board[r, c] == 0 || IsEnemy(isWhite, r, c);
-
         private void ExecuteMove(int fr, int fc, int tr, int tc)
         {
-            int movingPiece = board[fr, fc];
-            int targetPiece = board[tr, tc];
+            string destination = ChessGameState.CoordinatesToSquare(tr, tc);
+            var candidates = selectedLegalMoves
+                .Where(move => move.AsSpan(2, 2).SequenceEqual(destination))
+                .ToArray();
 
-            if (targetPiece != 0)
+            if (candidates.Length == 0)
+                candidates = chessState.GetLegalMovesFrom(fr, fc)
+                    .Where(move => move.AsSpan(2, 2).SequenceEqual(destination))
+                    .ToArray();
+
+            string? uciMove = candidates.FirstOrDefault();
+            if (candidates.Length > 1 && candidates.Any(move => move.Length == 5))
             {
-                if (targetPiece < 0) p1Captured.Add(targetPiece);
-                else p2Captured.Add(targetPiece);
-                UpdateCapturedDisplays();
-
-                if (Math.Abs(targetPiece) == 6)
-                {
-                    board[tr, tc] = movingPiece;
-                    board[fr, fc] = 0;
-                    lastMoveFrom = (fr, fc);
-                    lastMoveTo = (tr, tc);
-                    selectedSquare = null;
-                    validMoves.Clear();
-                    boardPanel.Invalidate();
-
-                    string winner = movingPiece > 0 ? p1Name : p2Name;
-                    EndGame($"Chiếu bí! {winner} đã bắt được Vua và giành chiến thắng!");
+                using var dialog = new PromotionDialog();
+                if (dialog.ShowDialog(this) != DialogResult.OK || dialog.SelectedPiece is null)
                     return;
-                }
+                uciMove = candidates.FirstOrDefault(move => move.Length == 5 && move[4] == dialog.SelectedPiece);
             }
 
-            if (movingPiece == 1 && tr == 0) movingPiece = 5;
-            else if (movingPiece == -1 && tr == 7) movingPiece = -5;
+            if (uciMove is not null)
+                ApplyUciMove(uciMove, notifyNetwork: true);
+        }
 
-            board[tr, tc] = movingPiece;
-            board[fr, fc] = 0;
+        private async Task BotChessMoveAsync()
+        {
+            if (gameOver || isWhiteTurn || botThinking)
+                return;
 
-            lastMoveFrom = (fr, fc);
-            lastMoveTo = (tr, tc);
-            selectedSquare = null;
-            validMoves.Clear();
-
-            OnChessMoveMade?.Invoke(fr, fc, tr, tc);
-
-            isWhiteTurn = !isWhiteTurn;
+            botThinking = true;
             UpdateTurnBanner();
-            boardPanel.Invalidate();
-
-            if (isSolo && !isWhiteTurn && !gameOver)
+            try
             {
-                var botTimer = new System.Windows.Forms.Timer { Interval = 400 };
-                botTimer.Tick += (s, e) =>
-                {
-                    botTimer.Stop();
-                    botTimer.Dispose();
-                    if (!gameOver) BotChessMove();
-                };
-                botTimer.Start();
+                if (!await EnsureStockfishReadyAsync(showError: true) || stockfish is null)
+                    return;
+
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetimeCancellation.Token);
+                timeout.CancelAfter(TimeSpan.FromSeconds(15));
+                string bestMove = await stockfish.GetBestMoveAsync(chessState.Fen, timeout.Token);
+                ApplyUciMove(bestMove, notifyNetwork: false);
+            }
+            catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
+            {
+                // Form đang đóng hoặc người dùng đã rời ván.
+            }
+            catch (OperationCanceledException)
+            {
+                ShowEngineError("Stockfish đã suy nghĩ quá thời gian cho phép.");
+            }
+            catch (Exception exception)
+            {
+                ShowEngineError($"Stockfish không thể tính nước đi: {exception.Message}");
+            }
+            finally
+            {
+                botThinking = false;
+                if (!gameOver && !IsDisposed && !Disposing)
+                    UpdateTurnBanner();
             }
         }
 
-        private void BotChessMove()
+        private void ApplyUciMove(string uciMove, bool notifyNetwork)
         {
-            var rng = new Random();
-            var allBlackMoves = new List<(int fr, int fc, int tr, int tc)>();
-
-            for (int r = 0; r < BOARD_SIZE; r++)
-                for (int c = 0; c < BOARD_SIZE; c++)
-                {
-                    if (board[r, c] < 0)
-                    {
-                        var moves = ComputeBasicMoves(r, c);
-                        foreach (var m in moves)
-                            allBlackMoves.Add((r, c, m.r, m.c));
-                    }
-                }
-
-            if (allBlackMoves.Count == 0)
+            if (!chessState.TryApplyMove(uciMove, out string error))
             {
-                EndGame("Quan Den het nuoc di hop le! Hoa co.");
+                MessageBox.Show(error, "Nước đi không hợp lệ", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            var captureMoves = allBlackMoves.Where(m => board[m.tr, m.tc] > 0).ToList();
-            var chosen = captureMoves.Count > 0
-                ? captureMoves[rng.Next(captureMoves.Count)]
-                : allBlackMoves[rng.Next(allBlackMoves.Count)];
+            var from = ChessGameState.SquareToCoordinates(uciMove.AsSpan(0, 2));
+            var to = ChessGameState.SquareToCoordinates(uciMove.AsSpan(2, 2));
+            lastMoveFrom = (from.Row, from.Column);
+            lastMoveTo = (to.Row, to.Column);
+            selectedSquare = null;
+            selectedLegalMoves = Array.Empty<string>();
+            validMoves.Clear();
 
-            ExecuteMove(chosen.fr, chosen.fc, chosen.tr, chosen.tc);
+            SyncBoardFromFen();
+            boardPanel.Invalidate();
+
+            if (notifyNetwork)
+            {
+                OnChessMoveMade?.Invoke(from.Row, from.Column, to.Row, to.Column);
+                OnChessUciMoveMade?.Invoke(uciMove);
+            }
+
+            if (HandleChessEndGame())
+                return;
+
+            UpdateTurnBanner();
+            if (isSolo && !isWhiteTurn)
+                _ = BotChessMoveAsync();
+        }
+
+        private void SyncBoardFromFen()
+        {
+            Array.Clear(board);
+            string[] fields = chessState.Fen.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string[] ranks = fields[0].Split('/');
+
+            for (int row = 0; row < BOARD_SIZE; row++)
+            {
+                int column = 0;
+                foreach (char symbol in ranks[row])
+                {
+                    if (char.IsDigit(symbol))
+                    {
+                        column += symbol - '0';
+                        continue;
+                    }
+
+                    int piece = char.ToLowerInvariant(symbol) switch
+                    {
+                        'p' => 1,
+                        'n' => 2,
+                        'b' => 3,
+                        'r' => 4,
+                        'q' => 5,
+                        'k' => 6,
+                        _ => 0
+                    };
+                    board[row, column++] = char.IsUpper(symbol) ? piece : -piece;
+                }
+            }
+
+            isWhiteTurn = chessState.WhiteToMove;
+            RebuildCapturedPieces();
+        }
+
+        private void RebuildCapturedPieces()
+        {
+            p1Captured.Clear();
+            p2Captured.Clear();
+            p1Captured.AddRange(chessState.CapturedBlackPieces.Select(piece => -FenPieceToValue(piece)));
+            p2Captured.AddRange(chessState.CapturedWhitePieces.Select(FenPieceToValue));
+            UpdateCapturedDisplays();
+        }
+
+        private static int FenPieceToValue(char piece) => char.ToLowerInvariant(piece) switch
+        {
+            'p' => 1,
+            'n' => 2,
+            'b' => 3,
+            'r' => 4,
+            'q' => 5,
+            'k' => 6,
+            _ => 0
+        };
+
+        private bool HandleChessEndGame()
+        {
+            if (!chessState.IsEndGame || chessState.EndgameType is null)
+                return false;
+
+            string message = chessState.EndgameType.Value switch
+            {
+                EndgameType.Checkmate => chessState.WhiteWon == true
+                    ? $"Chiếu bí! {p1Name} chiến thắng."
+                    : $"Chiếu bí! {p2Name} chiến thắng.",
+                EndgameType.Stalemate => "Hòa cờ do bên đến lượt không còn nước đi hợp lệ.",
+                EndgameType.InsufficientMaterial => "Hòa cờ do không đủ lực lượng để chiếu bí.",
+                EndgameType.FiftyMoveRule => "Hòa cờ theo luật 50 nước.",
+                EndgameType.Repetition => "Hòa cờ do thế cờ lặp lại ba lần.",
+                EndgameType.DrawDeclared => "Hai bên đã đồng ý hòa.",
+                _ => "Ván cờ đã kết thúc."
+            };
+            EndGame(message);
+            return true;
+        }
+
+        private async Task<bool> EnsureStockfishReadyAsync(bool showError)
+        {
+            if (!isSolo)
+                return false;
+
+            if (stockfish is not null)
+                return true;
+
+            string? executable = StockfishClient.FindExecutable();
+            if (executable is null)
+            {
+                if (showError)
+                    ShowEngineError(
+                        "Chưa tìm thấy Stockfish. Hãy chạy scripts\\setup-stockfish.ps1, " +
+                        "sau đó build/chạy lại ứng dụng.");
+                return false;
+            }
+
+            try
+            {
+                stockfish = new StockfishClient(executable, difficulty);
+                await stockfish.InitializeAsync(lifetimeCancellation.Token);
+                AddChatMessage("He thong", $"Stockfish đã sẵn sàng ở mức {difficulty.DisplayName}.");
+                return true;
+            }
+            catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
+            {
+                stockfish?.Dispose();
+                stockfish = null;
+                return false;
+            }
+            catch (Exception exception)
+            {
+                stockfish?.Dispose();
+                stockfish = null;
+                if (showError)
+                    ShowEngineError($"Không thể khởi động Stockfish: {exception.Message}");
+                return false;
+            }
+        }
+
+        private void ShowEngineError(string message)
+        {
+            if (engineWarningShown)
+                return;
+            engineWarningShown = true;
+            AddChatMessage("He thong", message);
+            MessageBox.Show(message, "Lỗi Stockfish", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
 
         private void UpdateTurnBanner()
         {
+            if (botThinking)
+            {
+                lblTurn.Text = $"STOCKFISH ({difficulty.DisplayName.ToUpperInvariant()}) ĐANG SUY NGHĨ...";
+                lblTurn.BackColor = ThemeColors.SurfaceAlt;
+                lblTurn.ForeColor = ThemeColors.Accent;
+                return;
+            }
+
             if (isWhiteTurn)
             {
-                lblTurn.Text = "LUOT CUA TRANG (BAN)";
+                lblTurn.Text = chessState.InCheck ? "LƯỢT CỦA TRẮNG — ĐANG BỊ CHIẾU" : "LƯỢT CỦA TRẮNG (BẠN)";
                 lblTurn.BackColor = ThemeColors.PrimaryLight;
                 lblTurn.ForeColor = ThemeColors.Primary;
             }
             else
             {
-                lblTurn.Text = $"LUOT CUA DEN ({p2Name.ToUpper()})";
+                lblTurn.Text = chessState.InCheck
+                    ? $"LƯỢT CỦA ĐEN ({p2Name.ToUpper()}) — ĐANG BỊ CHIẾU"
+                    : $"LƯỢT CỦA ĐEN ({p2Name.ToUpper()})";
                 lblTurn.BackColor = ThemeColors.SurfaceAlt;
                 lblTurn.ForeColor = ThemeColors.TextSecondary;
             }
@@ -630,6 +687,7 @@ namespace OnlineChessGame
         private void BtnLeave_Click(object? sender, EventArgs e)
         {
             gameTimer?.Stop();
+            DisposeEngineResources();
             Program.Context.SwitchTo(new DashboardForm(p1Name, p1Elo));
         }
 
@@ -650,7 +708,35 @@ namespace OnlineChessGame
         public void ReceiveOpponentMove(int fr, int fc, int tr, int tc)
         {
             if (gameOver || isWhiteTurn) return;
-            ExecuteMove(fr, fc, tr, tc);
+            string destination = ChessGameState.CoordinatesToSquare(tr, tc);
+            string? uciMove = chessState.GetLegalMovesFrom(fr, fc)
+                .Where(move => move.AsSpan(2, 2).SequenceEqual(destination))
+                .OrderByDescending(move => move.EndsWith('q'))
+                .FirstOrDefault();
+            if (uciMove is not null)
+                ApplyUciMove(uciMove, notifyNetwork: false);
+        }
+
+        public void ReceiveOpponentMove(string uciMove)
+        {
+            if (gameOver || isWhiteTurn) return;
+            ApplyUciMove(uciMove, notifyNetwork: false);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            DisposeEngineResources();
+            base.OnFormClosed(e);
+        }
+
+        private void DisposeEngineResources()
+        {
+            if (engineResourcesDisposed)
+                return;
+            engineResourcesDisposed = true;
+            lifetimeCancellation.Cancel();
+            stockfish?.Dispose();
+            lifetimeCancellation.Dispose();
         }
     }
 }

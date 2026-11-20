@@ -3,9 +3,12 @@
 **/obj/
 **/__pycache__/
 TestResults/
+# Engine binaries are installed locally by scripts/setup-stockfish.ps1
+Engines/Stockfish/*.exe
 # Never commit private keys or local credentials
 *.pfx
 *.p12
 *.key
 .env
 .env.*
+Design/client-config.json
