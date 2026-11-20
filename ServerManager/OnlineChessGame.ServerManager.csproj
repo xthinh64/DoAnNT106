@@ -9,5 +9,6 @@
   <ItemGroup>
     <ProjectReference Include="../Auth/OnlineChessGame.Auth.csproj" />
     <ProjectReference Include="../Network/OnlineChessGame.Network.csproj" />
+    <ProjectReference Include="../Server/OnlineChessGame.Server.csproj" />
   </ItemGroup>
 </Project>

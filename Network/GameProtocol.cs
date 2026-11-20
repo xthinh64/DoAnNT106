@@ -1,10 +1,12 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using System.Text.Json;
 
 namespace OnlineChessGame.Network;
 
 public enum PacketType
 {
+    AUTHENTICATE,
+    AUTHENTICATED,
     FIND_MATCH,     // Client bấm "Tìm trận Đấu Rank"
     CANCEL_MATCH,   // Client bấm "HỦY TÌM TRẬN"
     MATCH_FOUND,    // Server ghép xong 2 người -> mở bàn cờ

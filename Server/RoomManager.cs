@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using OnlineChessGame.Network;
 
@@ -11,13 +11,14 @@ public sealed class ClientSession
     public int Elo { get; set; } = 1200;
     public string CurrentRoomId { get; set; } = string.Empty;
     public TcpClient Tcp { get; }
-    public NetworkStream Stream { get; }
+    public Stream Stream { get; }
+    public PlayerProfile? Player { get; init; }
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
-    public ClientSession(TcpClient tcp)
+    public ClientSession(TcpClient tcp, Stream stream)
     {
         Tcp = tcp;
-        Stream = tcp.GetStream();
+        Stream = stream;
     }
 
     public async Task SendAsync(GamePacket packet, CancellationToken ct = default)

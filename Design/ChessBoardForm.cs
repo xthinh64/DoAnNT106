@@ -1,5 +1,6 @@
 using Chess;
 using OnlineChessGame.Chess;
+using OnlineChessGame.Network;
 
 namespace OnlineChessGame
 {
@@ -24,6 +25,8 @@ namespace OnlineChessGame
         private bool isWhiteTurn = true; // Trắng đi trước
         private bool gameOver = false;
         private bool isSolo = true;
+        private bool isFirstPlayer = true;
+        private bool onlineDetached;
         private bool botThinking;
         private bool engineWarningShown;
         private readonly ChessGameState chessState = new();
@@ -62,6 +65,12 @@ namespace OnlineChessGame
             EnableDoubleBuffering(boardPanel);
             SetupInitialBoard();
             ApplyCurrentTheme();
+            Disposed += (_, _) =>
+            {
+                _ = LeaveOnlineGameAsync();
+                gameTimer?.Dispose();
+                DisposeEngineResources();
+            };
         }
 
         public ChessBoardForm(
@@ -70,17 +79,24 @@ namespace OnlineChessGame
             string p2,
             int elo2,
             bool isSolo,
-            ChessDifficulty? difficulty = null) : this()
+            ChessDifficulty? difficulty = null,
+            bool isFirstPlayer = true) : this()
         {
             this.p1Name = p1;
             this.p1Elo = elo1;
             this.p2Name = p2;
             this.p2Elo = elo2;
             this.isSolo = isSolo;
+            this.isFirstPlayer = isFirstPlayer;
             this.difficulty = difficulty ?? ChessDifficulty.Medium;
 
             UpdatePlayerHeaders();
-            StartGameTimer();
+            if (isSolo) StartGameTimer();
+            else
+            {
+                lblTimerPlayer.Text = lblTimerOpp.Text = "--:--";
+                AttachOnlineGame();
+            }
         }
 
         private async void ChessBoardForm_Load(object? sender, EventArgs e)
@@ -111,11 +127,11 @@ namespace OnlineChessGame
             string init2 = string.IsNullOrEmpty(p2Name) ? "C" : p2Name[..1].ToUpper();
 
             lblAvatarPlayer.Text = init1;
-            lblNamePlayer.Text = $"{p1Name} [Quan Trang]";
+            lblNamePlayer.Text = $"{p1Name} [{(isFirstPlayer ? "Quan Trang" : "Quan Den")}]";
             lblEloPlayer.Text = $"Elo: {p1Elo}";
 
             lblAvatarOpp.Text = init2;
-            lblNameOpp.Text = $"{p2Name} [Quan Den]";
+            lblNameOpp.Text = $"{p2Name} [{(isFirstPlayer ? "Quan Den" : "Quan Trang")}]";
             lblEloOpp.Text = $"Elo: {p2Elo}";
 
             UpdateCapturedDisplays();
@@ -333,7 +349,7 @@ namespace OnlineChessGame
         private void BoardPanel_Click(object? sender, MouseEventArgs e)
         {
             if (gameOver || botThinking) return;
-            if (!isWhiteTurn && isSolo) return;
+            if (isSolo ? !isWhiteTurn : isWhiteTurn != isFirstPlayer) return;
 
             int col = (e.X - MARGIN) / CELL;
             int row = (e.Y - MARGIN) / CELL;
@@ -526,7 +542,7 @@ namespace OnlineChessGame
 
             string message = chessState.EndgameType.Value switch
             {
-                EndgameType.Checkmate => chessState.WhiteWon == true
+                EndgameType.Checkmate => chessState.WhiteWon == isFirstPlayer
                     ? $"Chiếu bí! {p1Name} chiến thắng."
                     : $"Chiếu bí! {p2Name} chiến thắng.",
                 EndgameType.Stalemate => "Hòa cờ do bên đến lượt không còn nước đi hợp lệ.",
@@ -602,15 +618,15 @@ namespace OnlineChessGame
 
             if (isWhiteTurn)
             {
-                lblTurn.Text = chessState.InCheck ? "LƯỢT CỦA TRẮNG — ĐANG BỊ CHIẾU" : "LƯỢT CỦA TRẮNG (BẠN)";
+                lblTurn.Text = chessState.InCheck ? "LƯỢT CỦA TRẮNG — ĐANG BỊ CHIẾU" : $"LƯỢT CỦA TRẮNG ({(isFirstPlayer ? "BẠN" : p2Name.ToUpperInvariant())})";
                 lblTurn.BackColor = ThemeColors.PrimaryLight;
                 lblTurn.ForeColor = ThemeColors.Primary;
             }
             else
             {
                 lblTurn.Text = chessState.InCheck
-                    ? $"LƯỢT CỦA ĐEN ({p2Name.ToUpper()}) — ĐANG BỊ CHIẾU"
-                    : $"LƯỢT CỦA ĐEN ({p2Name.ToUpper()})";
+                    ? $"LƯỢT CỦA ĐEN ({(isFirstPlayer ? p2Name.ToUpperInvariant() : "BẠN")}) — ĐANG BỊ CHIẾU"
+                    : $"LƯỢT CỦA ĐEN ({(isFirstPlayer ? p2Name.ToUpperInvariant() : "BẠN")})";
                 lblTurn.BackColor = ThemeColors.SurfaceAlt;
                 lblTurn.ForeColor = ThemeColors.TextSecondary;
             }
@@ -619,9 +635,9 @@ namespace OnlineChessGame
         private void UpdateCapturedDisplays()
         {
             string p1Text = string.Join(" ", p1Captured.Select(GetPieceSymbol));
-            lblCapturedPlayer.Text = "Bat: " + (string.IsNullOrEmpty(p1Text) ? "(chua co)" : p1Text);
-
             string p2Text = string.Join(" ", p2Captured.Select(GetPieceSymbol));
+            if (!isFirstPlayer) (p1Text, p2Text) = (p2Text, p1Text);
+            lblCapturedPlayer.Text = "Bat: " + (string.IsNullOrEmpty(p1Text) ? "(chua co)" : p1Text);
             lblCapturedOpp.Text = "Bat: " + (string.IsNullOrEmpty(p2Text) ? "(chua co)" : p2Text);
         }
 
@@ -668,6 +684,7 @@ namespace OnlineChessGame
 
         private void BtnDraw_Click(object? sender, EventArgs e)
         {
+            if (isSolo || gameOver) return;
             OnDrawRequest?.Invoke();
             AddChatMessage("He thong", "Ban da gui loi de nghi cau hoa.");
         }
@@ -684,8 +701,9 @@ namespace OnlineChessGame
             }
         }
 
-        private void BtnLeave_Click(object? sender, EventArgs e)
+        private async void BtnLeave_Click(object? sender, EventArgs e)
         {
+            await LeaveOnlineGameAsync();
             gameTimer?.Stop();
             DisposeEngineResources();
             Program.Context.SwitchTo(new DashboardForm(p1Name, p1Elo));
@@ -707,7 +725,7 @@ namespace OnlineChessGame
 
         public void ReceiveOpponentMove(int fr, int fc, int tr, int tc)
         {
-            if (gameOver || isWhiteTurn) return;
+            if (gameOver || (isSolo ? isWhiteTurn : isWhiteTurn == isFirstPlayer)) return;
             string destination = ChessGameState.CoordinatesToSquare(tr, tc);
             string? uciMove = chessState.GetLegalMovesFrom(fr, fc)
                 .Where(move => move.AsSpan(2, 2).SequenceEqual(destination))
@@ -719,12 +737,77 @@ namespace OnlineChessGame
 
         public void ReceiveOpponentMove(string uciMove)
         {
-            if (gameOver || isWhiteTurn) return;
+            if (gameOver || (isSolo ? isWhiteTurn : isWhiteTurn == isFirstPlayer)) return;
             ApplyUciMove(uciMove, notifyNetwork: false);
+        }
+
+        private void AttachOnlineGame()
+        {
+            OnChessUciMoveMade += move => _ = SendOnlineAsync(PacketType.MOVE, move);
+            OnChatSent += message => _ = SendOnlineAsync(PacketType.CHAT, message);
+            OnSurrender += () => _ = SendOnlineAsync(PacketType.SURRENDER);
+            OnDrawRequest += () => _ = SendOnlineAsync(PacketType.DRAW_REQUEST);
+            GameClient.Instance.OnMoveReceived += OnlineMoveReceived;
+            GameClient.Instance.OnChatReceived += OnlineChatReceived;
+            GameClient.Instance.OnSurrenderReceived += OnlineSurrenderReceived;
+            GameClient.Instance.OnDrawRequestReceived += OnlineDrawRequestReceived;
+            GameClient.Instance.OnDrawResponseReceived += OnlineDrawResponseReceived;
+            GameClient.Instance.OnOpponentLeft += OnlineOpponentLeft;
+            GameClient.Instance.OnDisconnected += OnlineDisconnected;
+        }
+
+        private async Task SendOnlineAsync(PacketType type, string payload = "")
+        {
+            try { await GameClient.Instance.SendAsync(new GamePacket(type, GameMode: "CHESS", Payload: payload)); }
+            catch (IOException) { RunOnUi(() => AddChatMessage("He thong", "Mất kết nối game server.")); }
+        }
+
+        private void RunOnUi(Action action)
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            BeginInvoke(() => { if (!IsDisposed) action(); });
+        }
+
+        private void OnlineMoveReceived(string move) => RunOnUi(() => ReceiveOpponentMove(move));
+        private void OnlineChatReceived(string sender, string message) => RunOnUi(() => AddChatMessage(sender, message));
+        private void OnlineSurrenderReceived(string _) => RunOnUi(() => EndGame($"{p2Name} đã đầu hàng. Bạn chiến thắng!"));
+        private void OnlineDrawRequestReceived(string requester) => RunOnUi(() =>
+        {
+            bool accept = MessageBox.Show($"{p2Name} đề nghị hòa. Bạn đồng ý?", "Đề nghị hòa",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+            _ = SendOnlineAsync(PacketType.DRAW_RESPONSE, accept ? "ACCEPT" : "DECLINE");
+            if (accept) EndGame("Hai bên đã đồng ý hòa.");
+        });
+        private void OnlineDrawResponseReceived(bool accept) => RunOnUi(() =>
+        {
+            if (accept) EndGame("Hai bên đã đồng ý hòa.");
+            else AddChatMessage("He thong", "Đối thủ từ chối hòa.");
+        });
+        private void OnlineOpponentLeft(string message) => RunOnUi(() => EndGame(message));
+        private void OnlineDisconnected() => RunOnUi(() => EndGame("Mất kết nối game server."));
+
+        private async Task LeaveOnlineGameAsync()
+        {
+            if (isSolo || onlineDetached) return;
+            onlineDetached = true;
+            GameClient.Instance.OnMoveReceived -= OnlineMoveReceived;
+            GameClient.Instance.OnChatReceived -= OnlineChatReceived;
+            GameClient.Instance.OnSurrenderReceived -= OnlineSurrenderReceived;
+            GameClient.Instance.OnDrawRequestReceived -= OnlineDrawRequestReceived;
+            GameClient.Instance.OnDrawResponseReceived -= OnlineDrawResponseReceived;
+            GameClient.Instance.OnOpponentLeft -= OnlineOpponentLeft;
+            GameClient.Instance.OnDisconnected -= OnlineDisconnected;
+            if (!string.IsNullOrEmpty(GameClient.Instance.CurrentRoomId))
+            {
+                try { await SendOnlineAsync(PacketType.LEAVE_ROOM).WaitAsync(TimeSpan.FromSeconds(3)); }
+                catch (TimeoutException) { GameClient.Instance.Disconnect(); }
+                finally { GameClient.Instance.CurrentRoomId = string.Empty; }
+            }
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            _ = LeaveOnlineGameAsync();
             DisposeEngineResources();
             base.OnFormClosed(e);
         }

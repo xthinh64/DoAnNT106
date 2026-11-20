@@ -90,6 +90,7 @@ namespace OnlineChessGame
                 if (result.Success && result.Player is { } player)
                 {
                     AuthConnection.Player = player;
+                    AuthConnection.GameToken = result.GameToken;
                     Program.Context.SwitchTo(new DashboardForm(player.Username, player.ChessElo));
                     return;
                 }
