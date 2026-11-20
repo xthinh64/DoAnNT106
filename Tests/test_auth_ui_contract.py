@@ -37,10 +37,12 @@ class AuthUiContract(unittest.TestCase):
         self.assertNotIn('Pwd=', sources)
         self.assertNotIn('MySql.Data', project)
 
-    def test_ranked_ui_is_honest_until_gameplay_server_exists(self):
+    def test_matchmaking_ui_uses_game_server_without_database_writes(self):
         dashboard = (ROOT / 'Design/DashboardForm.cs').read_text(encoding='utf-8-sig')
-        self.assertIn('Đấu Rank chưa được kết nối với server gameplay', dashboard)
-        self.assertNotIn('MatchmakingQueue', dashboard)
+        self.assertIn('GameClient.Instance.ConnectAsync', dashboard)
+        self.assertIn('PacketType.FIND_MATCH', dashboard)
+        self.assertIn('PacketType.CANCEL_MATCH', dashboard)
+        self.assertIn('GameClient.Instance.OnMatchFound', dashboard)
         chess = (ROOT / 'Design/ChessBoardForm.cs').read_text(encoding='utf-8-sig')
         self.assertNotIn('SaveGameResultToDatabase', chess)
 

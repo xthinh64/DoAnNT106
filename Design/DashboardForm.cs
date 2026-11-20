@@ -1,4 +1,5 @@
 using OnlineChessGame.Chess;
+using OnlineChessGame.Network;
 
 namespace OnlineChessGame
 {
@@ -6,6 +7,10 @@ namespace OnlineChessGame
     {
         private string playerName = "Kỳ thủ VN";
         private int elo = 1200;
+        private int caroElo = 1200;
+        private string? queuedMode;
+        private readonly System.Windows.Forms.Timer queueTimer = new() { Interval = 1000 };
+        private DateTime queueStarted;
         // === EVENT: Network Hooks sẵn sàng nối Socket TCP ===
         public event Action<string>? OnRankedQueueRequested;
         public event Action? OnCancelQueueRequested;
@@ -17,8 +22,12 @@ namespace OnlineChessGame
         public DashboardForm()
         {
             InitializeComponent();
-            btnRankedChess.Text = "Đấu Rank (Đang phát triển)";
-            btnRankedCaro.Text = "Đấu Rank (Đang phát triển)";
+            btnRankedChess.Text = "Tìm trận Cờ Vua";
+            btnRankedCaro.Text = "Tìm trận Cờ Caro";
+            queueTimer.Tick += (_, _) => lblQueueTimer.Text = $"Thời gian chờ: {(DateTime.UtcNow - queueStarted):mm\\:ss}";
+            GameClient.Instance.OnMatchFound += MatchFound;
+            GameClient.Instance.OnDisconnected += GameDisconnected;
+            Disposed += (_, _) => DetachNetwork();
             ApplyCurrentTheme();
             BuildHistoryRows();
         }
@@ -26,7 +35,8 @@ namespace OnlineChessGame
         public DashboardForm(string playerName, int elo) : this()
         {
             this.playerName = playerName;
-            this.elo = elo;
+            this.elo = AuthConnection.Player?.ChessElo ?? elo;
+            this.caroElo = AuthConnection.Player?.CaroElo ?? elo;
             UpdatePlayerInfo();
         }
 
@@ -198,6 +208,9 @@ namespace OnlineChessGame
 
         private void BtnLogout_Click(object? sender, EventArgs e)
         {
+            _ = CancelMatchAsync();
+            GameClient.Instance.Disconnect();
+            AuthConnection.GameToken = null;
             OnLogoutRequested?.Invoke();
             Program.Context.SwitchTo(new LoginForm());
         }
@@ -220,35 +233,115 @@ namespace OnlineChessGame
 
         private void BtnRankedChess_Click(object? sender, EventArgs e)
         {
-            ShowRankedUnavailable("Chess");
+            _ = FindMatchAsync("CHESS");
         }
 
         private void BtnSoloCaro_Click(object? sender, EventArgs e)
         {
-            Program.Context.SwitchTo(new CaroBoardForm(playerName, elo, "Computer Caro", 1200, isSolo: true));
+            Program.Context.SwitchTo(new CaroBoardForm(playerName, caroElo, "Computer Caro", 1200, isSolo: true));
         }
 
         private void BtnRankedCaro_Click(object? sender, EventArgs e)
         {
-            ShowRankedUnavailable("Caro");
+            _ = FindMatchAsync("CARO");
         }
 
-        private void ShowRankedUnavailable(string gameType)
+        private async Task FindMatchAsync(string gameType)
         {
-            OnRankedQueueRequested?.Invoke(gameType);
-            MessageBox.Show(
-                "Đấu Rank chưa được kết nối với server gameplay. " +
-                "Phiên bản hiện tại hỗ trợ đăng ký, đăng nhập và chơi Solo. " +
-                "Client không truy cập MySQL trực tiếp.",
-                "Tính năng đang phát triển",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            if (queuedMode is not null) return;
+            queuedMode = gameType;
+            btnRankedChess.Enabled = btnRankedCaro.Enabled = false;
+            lblQueueStatus.Text = gameType == "CHESS" ? "Đang tìm đối thủ Cờ Vua..." : "Đang tìm đối thủ Cờ Caro...";
+            lblQueueTimer.Text = "Thời gian chờ: 00:00";
+            queueStarted = DateTime.UtcNow;
+            queuePanel.Visible = true;
+            queueTimer.Start();
+            try
+            {
+                await GameClient.Instance.ConnectAsync(AuthConnection.GameHost, AuthConnection.GamePort,
+                    AuthConnection.Player?.Username ?? playerName);
+                if (queuedMode != gameType) return;
+                await GameClient.Instance.SendAsync(new GamePacket(PacketType.FIND_MATCH, GameMode: gameType,
+                    Payload: (gameType == "CARO" ? caroElo : elo).ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                OnRankedQueueRequested?.Invoke(gameType);
+            }
+            catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or InvalidOperationException or ArgumentException or TimeoutException or System.Security.Authentication.AuthenticationException or OperationCanceledException)
+            {
+                ResetQueue();
+                MessageBox.Show($"Không kết nối được game server {AuthConnection.GamePort}: {ex.Message}",
+                    "Lỗi tìm trận", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
-        private void BtnCancelQueue_Click(object? sender, EventArgs e)
+        private async Task CancelMatchAsync()
         {
-            queuePanel.Visible = false;
+            if (queuedMode is null) return;
+            ResetQueue();
+            try { await GameClient.Instance.SendAsync(new GamePacket(PacketType.CANCEL_MATCH)); }
+            catch (IOException) { GameClient.Instance.Disconnect(); }
             OnCancelQueueRequested?.Invoke();
+        }
+
+        private void BtnCancelQueue_Click(object? sender, EventArgs e) => _ = CancelMatchAsync();
+
+        private void ResetQueue()
+        {
+            queuedMode = null;
+            queueTimer.Stop();
+            queuePanel.Visible = false;
+            btnRankedChess.Enabled = btnRankedCaro.Enabled = true;
+        }
+
+        private void MatchFound(string roomId, string opponent, int opponentElo, bool isFirst, string gameMode)
+        {
+            if (!IsHandleCreated || IsDisposed) return;
+            BeginInvoke(() =>
+            {
+                if (IsDisposed) return;
+                if (queuedMode != gameMode)
+                {
+                    _ = LeaveUnexpectedMatchAsync(roomId);
+                    return;
+                }
+                ResetQueue();
+                int myElo = gameMode == "CARO" ? caroElo : elo;
+                Form board = gameMode == "CHESS"
+                    ? new ChessBoardForm(playerName, myElo, opponent, opponentElo, isSolo: false, isFirstPlayer: isFirst)
+                    : new CaroBoardForm(playerName, myElo, opponent, opponentElo, isSolo: false, isFirstPlayer: isFirst);
+                Program.Context.SwitchTo(board);
+            });
+        }
+
+        private static async Task LeaveUnexpectedMatchAsync(string roomId)
+        {
+            try { await GameClient.Instance.SendAsync(new GamePacket(PacketType.LEAVE_ROOM, RoomId: roomId)); }
+            catch (IOException) { GameClient.Instance.Disconnect(); }
+            GameClient.Instance.CurrentRoomId = string.Empty;
+        }
+
+        private void GameDisconnected()
+        {
+            if (!IsHandleCreated || IsDisposed) return;
+            BeginInvoke(() =>
+            {
+                if (IsDisposed || queuedMode is null) return;
+                ResetQueue();
+                MessageBox.Show("Mất kết nối game server. Vui lòng tìm trận lại.", "Mất kết nối",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            });
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            DetachNetwork();
+            base.OnFormClosed(e);
+        }
+
+        private void DetachNetwork()
+        {
+            GameClient.Instance.OnMatchFound -= MatchFound;
+            GameClient.Instance.OnDisconnected -= GameDisconnected;
+            queueTimer.Dispose();
         }
     }
 }

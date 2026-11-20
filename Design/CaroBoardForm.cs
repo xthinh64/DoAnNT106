@@ -1,3 +1,5 @@
+using OnlineChessGame.Network;
+
 namespace OnlineChessGame
 {
     public partial class CaroBoardForm : Form
@@ -15,6 +17,8 @@ namespace OnlineChessGame
         private bool isPlayerTurn = true;
         private bool gameOver = false;
         private bool isSolo = true;
+        private bool isFirstPlayer = true;
+        private bool onlineDetached;
 
         // Thông tin người chơi
         private string p1Name = "Kỳ thủ VN";
@@ -41,18 +45,30 @@ namespace OnlineChessGame
             InitializeComponent();
             EnableDoubleBuffering(boardPanel);
             ApplyCurrentTheme();
+            Disposed += (_, _) =>
+            {
+                _ = LeaveOnlineGameAsync();
+                gameTimer?.Dispose();
+            };
         }
 
-        public CaroBoardForm(string p1, int elo1, string p2, int elo2, bool isSolo) : this()
+        public CaroBoardForm(string p1, int elo1, string p2, int elo2, bool isSolo, bool isFirstPlayer = true) : this()
         {
             this.p1Name = p1;
             this.p1Elo = elo1;
             this.p2Name = p2;
             this.p2Elo = elo2;
             this.isSolo = isSolo;
+            this.isFirstPlayer = isFirstPlayer;
+            isPlayerTurn = isFirstPlayer;
 
             UpdatePlayerHeaders();
-            StartGameTimer();
+            if (isSolo) StartGameTimer();
+            else
+            {
+                lblTimerPlayer.Text = lblTimerOpp.Text = "--:--";
+                AttachOnlineGame();
+            }
         }
 
         private void CaroBoardForm_Load(object? sender, EventArgs e)
@@ -75,11 +91,11 @@ namespace OnlineChessGame
             string init2 = string.IsNullOrEmpty(p2Name) ? "C" : p2Name[..1].ToUpper();
 
             lblAvatarPlayer.Text = init1;
-            lblNamePlayer.Text = $"{p1Name} [Quan X]";
+            lblNamePlayer.Text = $"{p1Name} [Quan {(isFirstPlayer ? "X" : "O")}]";
             lblEloPlayer.Text = $"Elo: {p1Elo}";
 
             lblAvatarOpp.Text = init2;
-            lblNameOpp.Text = $"{p2Name} [Quan O]";
+            lblNameOpp.Text = $"{p2Name} [Quan {(isFirstPlayer ? "O" : "X")}]";
             lblEloOpp.Text = $"Elo: {p2Elo}";
 
             UpdateTurnBanner();
@@ -256,10 +272,11 @@ namespace OnlineChessGame
             if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) return;
             if (board[row, col] != 0) return;
 
-            PlaceMove(row, col, 1);
+            int myPiece = isFirstPlayer ? 1 : 2;
+            PlaceMove(row, col, myPiece);
             OnCaroMoveMade?.Invoke(row, col);
 
-            if (CheckWin(row, col, 1))
+            if (CheckWin(row, col, myPiece))
             {
                 EndGame($"Chuc mung! {p1Name} da chien thang 5 quan lien tiep!");
                 return;
@@ -349,13 +366,13 @@ namespace OnlineChessGame
         {
             if (isPlayerTurn)
             {
-                lblTurn.Text = "LUOT CUA BAN (QUAN X)";
+                lblTurn.Text = $"LUOT CUA BAN (QUAN {(isFirstPlayer ? "X" : "O")})";
                 lblTurn.BackColor = ThemeColors.PrimaryLight;
                 lblTurn.ForeColor = ThemeColors.Primary;
             }
             else
             {
-                lblTurn.Text = $"LUOT CUA {p2Name.ToUpper()} (QUAN O)";
+                lblTurn.Text = $"LUOT CUA {p2Name.ToUpper()} (QUAN {(isFirstPlayer ? "O" : "X")})";
                 lblTurn.BackColor = ThemeColors.SurfaceAlt;
                 lblTurn.ForeColor = ThemeColors.TextSecondary;
             }
@@ -363,6 +380,7 @@ namespace OnlineChessGame
 
         private void EndGame(string message)
         {
+            if (gameOver) return;
             gameOver = true;
             gameTimer?.Stop();
 
@@ -404,6 +422,7 @@ namespace OnlineChessGame
 
         private void BtnDraw_Click(object? sender, EventArgs e)
         {
+            if (isSolo || gameOver) return;
             OnDrawRequest?.Invoke();
             AddChatMessage("He thong", "Ban da gui loi de nghi cau hoa.");
         }
@@ -419,8 +438,9 @@ namespace OnlineChessGame
             }
         }
 
-        private void BtnLeave_Click(object? sender, EventArgs e)
+        private async void BtnLeave_Click(object? sender, EventArgs e)
         {
+            await LeaveOnlineGameAsync();
             gameTimer?.Stop();
             Program.Context.SwitchTo(new DashboardForm(p1Name, p1Elo));
         }
@@ -442,9 +462,11 @@ namespace OnlineChessGame
         public void ReceiveOpponentMove(int r, int c)
         {
             if (gameOver || isPlayerTurn) return;
+            if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE || board[r, c] != 0) return;
 
-            PlaceMove(r, c, 2);
-            if (CheckWin(r, c, 2))
+            int opponentPiece = isFirstPlayer ? 2 : 1;
+            PlaceMove(r, c, opponentPiece);
+            if (CheckWin(r, c, opponentPiece))
             {
                 EndGame($"{p2Name} da chien thang!");
                 return;
@@ -452,6 +474,81 @@ namespace OnlineChessGame
 
             isPlayerTurn = true;
             UpdateTurnBanner();
+        }
+
+        private void AttachOnlineGame()
+        {
+            OnCaroMoveMade += (row, col) => _ = SendOnlineAsync(PacketType.MOVE, $"{row},{col}");
+            OnChatSent += message => _ = SendOnlineAsync(PacketType.CHAT, message);
+            OnSurrender += () => _ = SendOnlineAsync(PacketType.SURRENDER);
+            OnDrawRequest += () => _ = SendOnlineAsync(PacketType.DRAW_REQUEST);
+            GameClient.Instance.OnMoveReceived += OnlineMoveReceived;
+            GameClient.Instance.OnChatReceived += OnlineChatReceived;
+            GameClient.Instance.OnSurrenderReceived += OnlineSurrenderReceived;
+            GameClient.Instance.OnDrawRequestReceived += OnlineDrawRequestReceived;
+            GameClient.Instance.OnDrawResponseReceived += OnlineDrawResponseReceived;
+            GameClient.Instance.OnOpponentLeft += OnlineOpponentLeft;
+            GameClient.Instance.OnDisconnected += OnlineDisconnected;
+        }
+
+        private async Task SendOnlineAsync(PacketType type, string payload = "")
+        {
+            try { await GameClient.Instance.SendAsync(new GamePacket(type, GameMode: "CARO", Payload: payload)); }
+            catch (IOException) { RunOnUi(() => AddChatMessage("He thong", "Mất kết nối game server.")); }
+        }
+
+        private void RunOnUi(Action action)
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            BeginInvoke(() => { if (!IsDisposed) action(); });
+        }
+
+        private void OnlineMoveReceived(string move) => RunOnUi(() =>
+        {
+            var parts = move.Split(',');
+            if (parts.Length == 2 && int.TryParse(parts[0], out int row) && int.TryParse(parts[1], out int col))
+                ReceiveOpponentMove(row, col);
+        });
+        private void OnlineChatReceived(string sender, string message) => RunOnUi(() => AddChatMessage(sender, message));
+        private void OnlineSurrenderReceived(string _) => RunOnUi(() => EndGame($"{p2Name} đã đầu hàng. Bạn chiến thắng!"));
+        private void OnlineDrawRequestReceived(string requester) => RunOnUi(() =>
+        {
+            bool accept = MessageBox.Show($"{p2Name} đề nghị hòa. Bạn đồng ý?", "Đề nghị hòa",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+            _ = SendOnlineAsync(PacketType.DRAW_RESPONSE, accept ? "ACCEPT" : "DECLINE");
+            if (accept) EndGame("Hai bên đã đồng ý hòa.");
+        });
+        private void OnlineDrawResponseReceived(bool accept) => RunOnUi(() =>
+        {
+            if (accept) EndGame("Hai bên đã đồng ý hòa.");
+            else AddChatMessage("He thong", "Đối thủ từ chối hòa.");
+        });
+        private void OnlineOpponentLeft(string message) => RunOnUi(() => EndGame(message));
+        private void OnlineDisconnected() => RunOnUi(() => EndGame("Mất kết nối game server."));
+
+        private async Task LeaveOnlineGameAsync()
+        {
+            if (isSolo || onlineDetached) return;
+            onlineDetached = true;
+            GameClient.Instance.OnMoveReceived -= OnlineMoveReceived;
+            GameClient.Instance.OnChatReceived -= OnlineChatReceived;
+            GameClient.Instance.OnSurrenderReceived -= OnlineSurrenderReceived;
+            GameClient.Instance.OnDrawRequestReceived -= OnlineDrawRequestReceived;
+            GameClient.Instance.OnDrawResponseReceived -= OnlineDrawResponseReceived;
+            GameClient.Instance.OnOpponentLeft -= OnlineOpponentLeft;
+            GameClient.Instance.OnDisconnected -= OnlineDisconnected;
+            if (!string.IsNullOrEmpty(GameClient.Instance.CurrentRoomId))
+            {
+                try { await SendOnlineAsync(PacketType.LEAVE_ROOM).WaitAsync(TimeSpan.FromSeconds(3)); }
+                catch (TimeoutException) { GameClient.Instance.Disconnect(); }
+                finally { GameClient.Instance.CurrentRoomId = string.Empty; }
+            }
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            _ = LeaveOnlineGameAsync();
+            base.OnFormClosed(e);
         }
     }
 }

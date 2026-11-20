@@ -1,12 +1,22 @@
 # Cờ vua & Cờ caro trực tuyến — NT106.R13
 
-Đồ án cuối kỳ môn **Lập trình mạng căn bản**, nhóm 7. Ứng dụng gồm client C# WinForms, server xác thực TCP/TLS, giao diện quản trị server và cơ sở dữ liệu MySQL.
+Đồ án cuối kỳ môn **Lập trình mạng căn bản**, nhóm 7. Ứng dụng gồm client C# WinForms, server xác thực và gameplay qua TLS, giao diện quản trị server và cơ sở dữ liệu MySQL.
 
 Để đóng gói cho người dùng tải từ GitHub và triển khai server trên VPS Linux,
 xem [hướng dẫn phát hành](docs/PHAT_HANH_VPS.md). Bản phát hành Windows chứa
 sẵn .NET runtime và Stockfish; máy người chơi không cần chạy script cài engine.
 
-**Hiện trạng:** đăng ký/đăng nhập qua server đã được tích hợp; có giao diện và chế độ chơi cục bộ cho hai trò chơi. Luồng thi đấu trực tuyến giữa hai máy, chat qua mạng và session sau đăng nhập **chưa hoàn chỉnh**.
+**Hiện trạng:** đăng ký/đăng nhập qua server, chơi Solo và ghép hai người qua LAN cho cờ vua/cờ caro đã có. Game server chuyển nước đi, chat, đầu hàng, cầu hòa và rời phòng. Kênh game dùng TLS 1.2/1.3 và token phiên cấp sau đăng nhập; chưa lưu kết quả/Elo hoặc kiểm tra nước đi ở server.
+
+## Chọn hướng dẫn
+
+- [Thiết lập từ đầu: MySQL, chứng chỉ và chạy cùng máy](#bắt-đầu-từ-đâu).
+- [Chạy hai client trên LAN](#bước-9--mở-server-ra-lan-và-chạy-client-máy-bc).
+- [Hướng dẫn LAN chi tiết](docs/HUONG_DAN_CHAY_LAN.md).
+- [Đóng gói Windows và triển khai VPS Linux](docs/PHAT_HANH_VPS.md).
+- [Chức năng và giới hạn hiện tại](#chức-năng-hiện-có).
+
+Client và server phải dùng cùng phiên bản giao thức mới. Các bản client cũ dùng game TCP không tương thích với game TLS có token.
 
 ## Thành viên
 
@@ -225,6 +235,7 @@ Cửa sổ quản trị mở ra chưa có nghĩa listener đã chạy. Chọn ta
 | Gateway | `8888` |
 | Worker 1 | `9001` |
 | Worker 2 | `9002` |
+| Game | `9000` |
 | Cho phép chuyển mật khẩu cũ | Bỏ chọn |
 
 Trong ô **Chuỗi kết nối MySQL**, nhập một dòng:
@@ -284,12 +295,12 @@ Chứng chỉ do UI tạo có hiệu lực một năm. Khi đổi chứng chỉ,
 
 ## Bước 7 — Khởi động server và đọc trạng thái
 
-Trong ServerManager, chọn **Khởi động**. UI kiểm tra MySQL/schema auth và PFX trước khi mở gateway cùng hai worker.
+Trong ServerManager, chọn **Khởi động**. UI kiểm tra MySQL/schema auth và PFX trước khi mở gateway, hai worker và game server.
 
 **Kết quả cần thấy:**
 
 - Trạng thái **ĐANG CHẠY**.
-- Tab **Vận hành** hiển thị gateway `127.0.0.1:8888` và worker `127.0.0.1:9001`, `127.0.0.1:9002`.
+- Tab **Vận hành** hiển thị gateway `127.0.0.1:8888`, game `127.0.0.1:9000` và worker `127.0.0.1:9001`, `127.0.0.1:9002`.
 - Nhật ký có thông báo server đã khởi động.
 
 Giữ cửa sổ mở khi chạy client. Muốn sửa cấu hình, chọn **Dừng server** trước. Đóng cửa sổ sẽ dừng listener và các kết nối đang xử lý. Có thể khởi động lại trong cùng cửa sổ; không chạy thêm server console trên cùng bộ cổng.
@@ -330,10 +341,10 @@ Trên máy A, chạy `ipconfig` trong PowerShell. Lấy **IPv4 Address** của W
 
 1. Chọn **Dừng server**.
 2. Trong tab Cấu hình, đổi **IP gateway** từ `127.0.0.1` sang IP LAN máy A, ví dụ `192.168.1.10`.
-3. Giữ gateway `8888`, worker `9001/9002` và chuỗi DB `Server=127.0.0.1` vì MySQL vẫn ở máy A.
+3. Giữ gateway `8888`, game `9000`, worker `9001/9002` và chuỗi DB `Server=127.0.0.1` vì MySQL vẫn ở máy A.
 4. Giữ nguyên PFX, chọn **Khởi động** lại.
 
-**Kết quả cần thấy:** gateway `192.168.1.10:8888`; worker vẫn `127.0.0.1:9001/9002`. Máy A chỉ thử client qua IP LAN khi gateway đã bind riêng IP LAN.
+**Kết quả cần thấy:** gateway `192.168.1.10:8888`, game `192.168.1.10:9000`; worker vẫn `127.0.0.1:9001/9002`. Máy A chỉ thử client qua IP LAN khi gateway đã bind riêng IP LAN.
 
 ### 9.3. Cho phép kết nối qua Windows Firewall
 
@@ -348,9 +359,18 @@ New-NetFirewallRule `
   -LocalPort 8888 `
   -Profile Private `
   -RemoteAddress LocalSubnet
+
+New-NetFirewallRule `
+  -DisplayName "OnlineChess Game TLS 9000 LAN" `
+  -Direction Inbound `
+  -Action Allow `
+  -Protocol TCP `
+  -LocalPort 9000 `
+  -Profile Private `
+  -RemoteAddress LocalSubnet
 ```
 
-Chỉ cần mở cổng gateway `8888` cho client. Không cần mở MySQL `3306` hoặc worker `9001/9002` ra LAN trong mô hình này. Nếu chọn cổng gateway khác, sửa rule và endpoint client tương ứng.
+Client cần cổng auth `8888` và game `9000`. Không mở MySQL `3306` hoặc worker `9001/9002` ra LAN. Nếu đổi cổng game, đặt `gamePort` tương ứng trong `client-config.json` hoặc biến `CHESS_GAME_PORT` trên client.
 
 ### 9.4. Kiểm tra từ máy B/C
 
@@ -358,9 +378,10 @@ Máy B/C kết nối cùng mạng có thể liên lạc với A. Trong **Windows
 
 ```powershell
 Test-NetConnection 192.168.1.10 -Port 8888
+Test-NetConnection 192.168.1.10 -Port 9000
 ```
 
-**Kết quả cần thấy:** `TcpTestSucceeded : True`. Nếu `False`, kiểm tra IP, server đã chạy, firewall và việc Wi-Fi khách có chặn liên lạc giữa các thiết bị hay không.
+**Kết quả cần thấy:** `TcpTestSucceeded : True` cho cả hai cổng. Nếu `False`, kiểm tra IP, server đã chạy, firewall và việc Wi-Fi khách có chặn liên lạc giữa các thiết bị hay không.
 
 ### 9.5. Khởi chạy client trên B/C
 
@@ -377,6 +398,8 @@ dotnet run --project Design/OnlineChessGame.csproj
 Kiểm tra ô server trong màn hình đăng nhập là `192.168.1.10:8888` trước khi chuyển sang Đăng ký. Trên B/C, `127.0.0.1` và `localhost` trỏ về chính máy client; phải nhập IP máy A. `0.0.0.0` có thể dùng làm địa chỉ bind server nhưng không dùng làm địa chỉ đích client.
 
 Pin của B và C phải giống pin chứng chỉ server A. Nếu A đổi IP do DHCP hoặc chuyển Wi-Fi, cập nhật IP bind và endpoint trên client; PFX có thể giữ nguyên.
+
+Để thử trận LAN, đăng nhập bằng **hai tài khoản khác nhau** trên B và C. Cùng chọn **Tìm trận Cờ Vua** hoặc cùng chọn **Tìm trận Cờ Caro**. Sau khi ghép, thử đi một nước ở mỗi bên và gửi tin nhắn trong ô chat. Nút Hủy tìm trận và Rời trận cũng gửi yêu cầu đến game server. Kết quả/Elo online chưa được lưu.
 
 ## Bước 10 — Xác nhận dữ liệu đã lưu
 
@@ -426,7 +449,7 @@ Không cần tạo lại database, tài khoản DB hoặc PFX. Các dữ liệu 
 | Client LAN không tới cổng 8888 | Kiểm tra server bind IP LAN, firewall đúng profile Private và mạng cho thiết bị liên lạc |
 | TCP đạt nhưng báo không kết nối TLS | Kiểm tra pin đúng chứng chỉ, đủ 64 hex; mở lại client từ PowerShell đã đặt biến |
 | Tài khoản cũ trả `reset_required` | Mật khẩu cũ dạng rõ; thử tài khoản mới, chưa có quy trình reset tích hợp |
-| Hai máy vào sảnh nhưng tìm trận không đồng bộ | Server gameplay còn thiếu; cài DB/LAN không tự hoàn thiện chức năng này |
+| Hai máy vào sảnh nhưng không ghép trận | Kiểm tra Game TLS đang chạy trên server, firewall cổng 9000 và `gamePort` trên hai client |
 
 Nếu đã kiểm tra đúng mật khẩu/quyền nhưng kết nối cục bộ vẫn không khớp host, quản trị viên có thể kiểm tra tài khoản bằng kết nối `root`:
 
@@ -449,39 +472,60 @@ Hướng dẫn mở rộng, gồm publish client tự chứa runtime cho máy kh
 
 | Phần | Đã triển khai | Giới hạn hiện tại |
 |---|---|---|
-| Tài khoản | Đăng ký, đăng nhập qua TCP/TLS; lưu tài khoản và đọc hồ sơ/Elo từ MySQL | Chưa có token/session, thu hồi phiên hoặc quy trình quên mật khẩu |
+| Tài khoản | Đăng ký/đăng nhập qua TLS, băm mật khẩu, cấp token mở phiên game | Chưa có quên mật khẩu hoặc thu hồi phiên từ xa |
 | Gateway và worker | Round-robin theo kết nối, gateway chuyển tiếp TLS tới hai worker loopback; fallback nếu chưa kết nối TCP được tới worker | Ba listener cùng một tiến trình; chưa có health check định kỳ hoặc gateway dự phòng |
-| Quản trị server | WinForms: cấu hình IP/cổng, PFX và MySQL; tạo PFX; kiểm tra schema auth; khởi động/dừng; sao chép certificate pin; bộ đếm và nhật ký | Quản lý instance do chính cửa sổ khởi chạy; chưa có điều khiển server console từ xa hoặc CRUD tài khoản/phòng/trận |
-| Client | Đăng nhập, đăng ký, sảnh, bàn cờ vua/caro; giao diện sáng/tối; không giữ thông tin DB | Gameplay online chưa có session và transport riêng |
-| Cờ vua cục bộ | Luật hợp lệ đầy đủ bằng Gera.Chess; chiếu/chiếu bí, nhập thành, en passant, chọn quân phong cấp, các luật hòa; Stockfish 4 mức khó | Stockfish phải được cài một lần bằng script; gameplay Rank/LAN vẫn đang phát triển |
+| Quản trị server | WinForms: cấu hình IP/cổng, PFX và MySQL; tạo PFX; kiểm tra schema auth; khởi động/dừng; sao chép certificate pin; bộ đếm và nhật ký | Khởi động/dừng cả auth và game; chưa có điều khiển server console từ xa hoặc CRUD tài khoản/phòng/trận |
+| Client | Đăng nhập, đăng ký, sảnh, bàn cờ vua/caro, tìm trận LAN và chat trong trận; giao diện sáng/tối; không giữ thông tin DB | Token dùng một lần để mở phiên game; mất kết nối cần đăng nhập lại |
+| Cờ vua cục bộ | Luật hợp lệ đầy đủ bằng Gera.Chess; chiếu/chiếu bí, nhập thành, en passant, chọn quân phong cấp, các luật hòa; Stockfish 4 mức khó | Stockfish dùng cho Solo; game server chưa kiểm tra tính hợp lệ nước đi |
 | Caro cục bộ | Bàn 15×15, kiểm tra từ 5 quân liên tiếp theo bốn hướng, bot đơn giản và đồng hồ | Chưa có xác nhận luật/kết quả trên server |
-| Hàng chờ và trận | Có nút UI và schema dự kiến | Nút Rank hiện báo đang phát triển; chưa có hàng chờ hoặc trận được server quản lý |
-| Chat, lịch sử và Elo | Có UI/event chat, schema và một phần lưu kết quả cờ vua | Chưa có transport chat liên máy; lịch sử sảnh đang dùng dữ liệu mẫu; kết quả/Elo chưa thống nhất mọi nhánh |
+| Hàng chờ và trận | Tìm/hủy trận theo cờ vua hoặc caro; server tạo phòng và phân bên đi trước | Ghép người chờ cùng chế độ, chưa ghép theo Elo; chưa lưu kết quả |
+| Chat, lịch sử và Elo | Chat liên máy trong trận; đọc Elo khi đăng nhập | Lịch sử sảnh đang dùng dữ liệu mẫu; kết quả/Elo chưa cập nhật sau trận online |
 
 ## Kiến trúc đang triển khai
 
 ```text
-WinForms client B/C
-        │ TCP/TLS, JSON có tiền tố độ dài
-        ▼
-Gateway :8888 ── round-robin ──┬── Worker TLS 127.0.0.1:9001
-                              └── Worker TLS 127.0.0.1:9002
-                                           │
-                              AuthAdmissionService dùng chung
-                                           │
-                                    MySqlAuthService
-                                           │
-                                         MySQL
+WinForms client
+  ├─ Auth TLS :8888 → Gateway → Worker :9001 / :9002 → MySQL :3306
+  │                                  └─ GameSessions cấp token sau đăng nhập
+  └─ Game TLS :9000 → Xác thực token → Hàng chờ → Phòng → Nước đi / chat
 ```
 
-Gateway và hai worker chạy trong **cùng tiến trình**. Có thể chọn một trong hai cách khởi chạy: `Server` (console) hoặc `ServerManager` (WinForms). Hai chương trình dùng chung thư viện `Network` và `Auth`; không chạy đồng thời trên cùng bộ cổng.
+Worker và MySQL chỉ cần truy cập cục bộ. Hai worker dùng chung kho token với game server trong cùng tiến trình. Game server dùng lại chứng chỉ PFX của auth; client kiểm tra cùng pin SHA-256 cho cả hai kết nối.
+
+Gateway, hai worker và game server chạy trong **cùng tiến trình**. Có thể chọn một trong hai cách khởi chạy: `Server` (console) hoặc `ServerManager` (WinForms). Không chạy đồng thời trên cùng bộ cổng.
 
 - TLS 1.2/1.3; client xác thực bằng SHA-256 của **toàn bộ chứng chỉ DER**, không phải SHA-1 thumbprint hoặc SPKI.
-- Giao thức JSON UTF-8, header độ dài 4 byte big-endian, payload tối đa 16 KiB. Mỗi kết nối phục vụ một yêu cầu/phản hồi.
+- Giao thức JSON UTF-8, header độ dài 4 byte big-endian, payload tối đa 16 KiB. Kết nối auth phục vụ một yêu cầu/phản hồi; kết nối game được giữ để trao đổi nhiều gói tin.
 - Hai action nghiệp vụ: `signin` và `signup`. Phản hồi thành công chứa `UserId`, `Username`, `DisplayName`, `ChessElo`, `CaroElo`.
 - PBKDF2-HMAC-SHA256: 600.000 vòng, salt ngẫu nhiên 16 byte, khóa dẫn xuất 32 byte; đối chiếu thời gian cố định.
 - Đăng ký ghi tài khoản và thống kê CHESS/CARO trong một transaction; Elo ban đầu 1200.
 - Mỗi listener giới hạn 128 kết nối đang xử lý; deadline 10 giây. Admission chung: tối đa 4 nghiệp vụ đồng thời, burst 20, nạp 5 yêu cầu/giây.
+
+## Phiên game bảo mật
+
+Game server dùng cùng PFX và certificate pin với auth. Đăng nhập cấp token ngẫu nhiên 256 bit, giữ trong bộ nhớ client; token hết hạn sau 15 phút và chỉ mở được một kết nối game. Phiên game kéo dài tối đa 8 giờ. Server dùng danh tính/Elo từ hồ sơ đăng nhập; không tin tên/Elo trong gói client. Token không lưu xuống file; server khởi động lại sẽ hủy token chưa dùng. Khi mất kết nối game, đăng nhập lại để lấy token mới. Hai client và server cần cập nhật cùng phiên bản.
+
+| Thiết lập | Giá trị mặc định / ý nghĩa |
+|---|---|
+| `CHESS_AUTH_ENDPOINT` | `127.0.0.1:8888` trên client; dùng IP/domain server khi chơi qua mạng |
+| `CHESS_CERT_PIN` | SHA-256 của chứng chỉ DER, 64 ký tự hex; dùng chung cho auth/game |
+| `CHESS_GAME_PORT` | `9000` trên client và server |
+| `CHESS_BIND_ADDRESS` | Địa chỉ lắng nghe server; `127.0.0.1` nếu chưa đặt |
+| `CHESS_GAME_BIND_ADDRESS` | Console server: mặc định theo bind auth; mẫu VPS đặt loopback |
+| `CHESS_CERT_PATH`, `CHESS_CERT_PASSWORD` | PFX và mật khẩu, chỉ đặt trên server |
+| `CHESS_DB_CONNECTION` | Chuỗi kết nối MySQL, chỉ đặt trên server |
+
+Server tự đọc `.env` qua `EnvironmentFile`; biến môi trường đã đặt có ưu tiên cao hơn. Client đọc `client-config.json` cạnh executable; có thể cấu hình như sau:
+
+```json
+{
+  "endpoint": "192.168.1.10:8888",
+  "certificatePin": "THAY_BANG_PIN_SHA256_64_KY_TU_HEX",
+  "gamePort": 9000
+}
+```
+
+Không đặt token, mật khẩu DB hoặc PFX trong cấu hình client. Máy người chơi không cần MySQL. Khi token hết hạn trước lần tìm trận đầu tiên, đăng xuất rồi đăng nhập lại. Một kết nối game đã xác thực có thể chơi nhiều trận cho đến khi ngắt hoặc đạt giới hạn 8 giờ.
 
 ## Cấu trúc repository
 
@@ -550,7 +594,7 @@ $env:AUTH_ALLOW_LEGACY_MIGRATION = 'false'
 dotnet run --project Server/OnlineChessGame.Server.csproj
 ```
 
-Dừng bằng `Ctrl+C`. Console dùng cổng cố định 8888/9001/9002, không chạy cùng UI trên bộ cổng này. Dòng `Auth ready` của console cho biết listener đã mở; console chưa kiểm tra DB trước khi nhận request như UI. Máy client vẫn cần endpoint và pin đúng như hướng dẫn chính.
+Dừng bằng `Ctrl+C`. Console dùng auth 8888/9001/9002 và game 9000 (đổi bằng `CHESS_GAME_PORT`), không chạy cùng UI trên bộ cổng này. Dòng `Auth ready` của console cho biết listener đã mở; console chưa kiểm tra DB trước khi nhận request như UI. Máy client vẫn cần endpoint và pin đúng như hướng dẫn chính.
 
 ## Biên dịch và kiểm thử
 
@@ -568,15 +612,15 @@ python -m unittest discover -s Tests -p "test_*.py"
 - Test Python kiểm tra cấu trúc mã nối UI/entrypoint, không thay thế kiểm thử thao tác GUI hoặc LAN nhiều máy.
 - Các số liệu test/build cũ trong `AUTH-SERVER.md` là kết quả ghi nhận ở thời điểm tài liệu đó được viết, không phải kết quả tự động cập nhật của checkout hiện tại.
 
-Kiểm tra gần nhất ngày 19/11/2026: client build đạt, 0 lỗi và 2 cảnh báo event chưa dùng; Python: 8 đạt, gồm kiểm tra client không còn provider/credential DB và Rank không mở hàng chờ giả. Đợt kiểm tra ServerManager trước đó ghi nhận transport 27 đạt; auth 24 đạt, 5 test DB bỏ qua; giám sát 4 đạt. Kiểm tra trực tiếp WinForms đã xác nhận mở hai tab, báo IP sai/cổng trùng, khôi phục trạng thái nút sau lỗi và đóng cửa sổ sạch. Chưa nghiệm thu gameplay online hoặc LAN ba máy đầy đủ.
+Kiểm tra ngày 20/11/2026: client và ServerManager build đạt; Python 8 test đạt; 4 test game server đạt: TLS/pin sai, thiếu token, token dùng một lần và ghép trận/chuyển nước đi/chat/rời phòng. Chưa nghiệm thu thao tác WinForms trên hai máy LAN; kết quả/Elo online chưa được lưu.
 
 ## Những phần cần hoàn thiện
 
-1. Session/token, thời hạn và thu hồi phiên; lấy danh tính từ phiên cho mọi thao tác sau đăng nhập.
-2. Dịch vụ phòng/ghép trận trên server; hai client cùng match ID, phân màu và trạng thái ready.
+1. Thu hồi phiên từ xa, giới hạn phiên cùng tài khoản và cấp lại token khi kết nối lại.
+2. Ghép theo Elo và xác nhận trạng thái ready trước khi bắt đầu trận.
 3. Bộ luật đầy đủ và trạng thái bàn cờ/đồng hồ do server xác nhận.
 4. Chốt trận và cập nhật Elo/lịch sử một lần, thống nhất cả hai trò chơi.
-5. Chat, heartbeat, reconnect và đồng bộ snapshot khi mất mạng.
+5. Heartbeat, reconnect và đồng bộ snapshot khi mất mạng.
 6. Xây dựng API server cho hàng chờ, lịch sử và xếp hạng; client không truy cập DB trực tiếp.
 7. Mở rộng UI quản trị với người chơi, phòng và trận khi các dịch vụ tương ứng đã có; tách gateway/worker thành tiến trình riêng nếu cần khả năng triển khai độc lập.
 

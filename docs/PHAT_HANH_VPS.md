@@ -8,8 +8,11 @@ GitHub Actions tại `.github/workflows/build-release.yml` tạo file
 `client-config.json`. Người chơi giải nén rồi mở `OnlineChessGame.exe`.
 Người chơi không cần chạy PowerShell, cài .NET SDK hay tải Stockfish riêng.
 
-Stockfish chạy trên máy người chơi cho chế độ Solo. VPS hiện chỉ phục vụ
-đăng ký/đăng nhập; đấu Rank/LAN giữa hai người chưa có gameplay server.
+Stockfish chạy trên máy người chơi cho chế độ Solo. Game server đã có hàng chờ,
+chuyển nước đi và chat cho hai người trên LAN. Kênh game dùng TLS 1.2/1.3 với cùng certificate pin như auth và token dùng một lần sau đăng nhập.
+Mẫu `.env` vẫn đặt `CHESS_GAME_BIND_ADDRESS=127.0.0.1`; khi triển khai game trên VPS,
+đổi sang địa chỉ interface phù hợp và mở cổng TCP `9000`. Cập nhật client/server cùng phiên bản.
+Server chưa xác nhận luật nước đi và chưa lưu kết quả/Elo, nên chưa bảo đảm tính công bằng cho Rank công khai.
 
 ## Chuẩn bị VPS trước khi phát hành client
 

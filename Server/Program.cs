@@ -31,7 +31,7 @@ try
         throw new InvalidOperationException("Certificate is outside its validity period.");
     string connection = Required("CHESS_DB_CONNECTION");
     bool allowLegacy = string.Equals(Environment.GetEnvironmentVariable("AUTH_ALLOW_LEGACY_MIGRATION"), "true", StringComparison.OrdinalIgnoreCase);
-    var service = new AuthAdmissionService(new MySqlAuthService(connection, allowLegacyMigration: allowLegacy));
+    var service = new GameSessions(new AuthAdmissionService(new MySqlAuthService(connection, allowLegacyMigration: allowLegacy)));
     // One shared global budget for both workers: max 4 active, burst 20, refill 5/s; no queue.
     var bind = IPAddress.Parse(Environment.GetEnvironmentVariable("CHESS_BIND_ADDRESS") ?? "127.0.0.1");
     using var stop = new CancellationTokenSource();
@@ -43,9 +43,10 @@ try
 
     // Game Server chạy cổng 9000 song song với AuthCluster
     int gamePort = int.TryParse(Environment.GetEnvironmentVariable("CHESS_GAME_PORT"), out int gp) ? gp : 9000;
-    await using var gameServer = new GameServer(bind, gamePort);
+    var gameBind = IPAddress.Parse(Environment.GetEnvironmentVariable("CHESS_GAME_BIND_ADDRESS") ?? bind.ToString());
+    await using var gameServer = new GameServer(gameBind, certificate, service, gamePort);
     gameServer.Start(stop.Token);
-    Console.WriteLine($"Game ready: {bind}:{gameServer.Port}");
+    Console.WriteLine($"Game ready: {gameBind}:{gameServer.Port}");
 
     try { await Task.Delay(Timeout.Infinite, stop.Token); }
     catch (OperationCanceledException) { }

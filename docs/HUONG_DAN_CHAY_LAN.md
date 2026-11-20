@@ -2,7 +2,7 @@
 
 Hướng dẫn theo mã nguồn hiện tại, dùng **Windows PowerShell** cho các lệnh ứng dụng và mạng; SQL chạy trong **MySQL Workbench**. Máy A chạy MySQL và ServerManager, máy B/C chạy client.
 
-**Phạm vi chạy được:** đăng ký và đăng nhập qua mạng, đọc hồ sơ/Elo từ MySQL, vào sảnh và chơi solo. Luồng hai máy cùng chơi một trận, chat liên máy và đồng bộ kết quả còn thiếu phần server. Cài database không tự hoàn thiện các chức năng đó.
+**Phạm vi chạy được:** đăng ký/đăng nhập qua mạng, chơi Solo, tìm trận cờ vua/caro giữa hai client LAN, gửi nước đi và chat. Kênh game dùng TLS và token cấp sau đăng nhập; chưa lưu kết quả/Elo.
 
 ## Trước khi làm: database, tài khoản và PFX là gì?
 
@@ -23,10 +23,9 @@ Nếu mới làm lần đầu, nên theo [README: thử cùng máy trước rồ
 ## 1. Sơ đồ và địa chỉ mẫu
 
 ```text
-Máy B: client ──┐
-               ├── TCP/TLS → Máy A: ServerManager :8888 → MySQL cục bộ :3306
-Máy C: client ──┘                       ├── worker loopback :9001
-                                      └── worker loopback :9002
+Máy B/C: client ── TCP/TLS → Máy A: ServerManager :8888 → MySQL cục bộ :3306
+              └── TCP game → Máy A: GameServer :9000
+Máy A: worker auth chỉ trên loopback :9001 và :9002
 ```
 
 | Máy | Vai trò | IP ví dụ |
@@ -161,7 +160,7 @@ ipconfig
 
 Lấy **IPv4 Address** của card Wi-Fi/Ethernet đang dùng chung với máy B/C. Không lấy IP WSL, Docker, VPN hoặc `127.0.0.1`. Ví dụ IPv4 thực tế là `192.168.1.10`.
 
-Trên mạng nội bộ tin cậy, đặt Windows Network profile thành **Private** trong Settings của kết nối đang dùng. Sau đó mở **PowerShell bằng Run as administrator** và thêm quy tắc cho gateway:
+Trên mạng nội bộ tin cậy, đặt Windows Network profile thành **Private** trong Settings của kết nối đang dùng. Sau đó mở **PowerShell bằng Run as administrator** và thêm quy tắc cho auth và game:
 
 ```powershell
 New-NetFirewallRule `
@@ -172,9 +171,18 @@ New-NetFirewallRule `
   -LocalPort 8888 `
   -Profile Private `
   -RemoteAddress LocalSubnet
+
+New-NetFirewallRule `
+  -DisplayName "OnlineChess Game TLS 9000 LAN" `
+  -Direction Inbound `
+  -Action Allow `
+  -Protocol TCP `
+  -LocalPort 9000 `
+  -Profile Private `
+  -RemoteAddress LocalSubnet
 ```
 
-Chỉ chạy lệnh thêm rule một lần. Nếu đổi cổng gateway trên UI, tạo quy tắc đúng cổng mới. Client chỉ kết nối gateway; không cần mở cổng 9001, 9002 hoặc 3306 cho các máy chơi trong mô hình này.
+Chỉ chạy lệnh thêm rule một lần. Nếu đổi cổng gateway/game trên UI, tạo quy tắc đúng cổng mới. Client cần cổng 8888 và 9000; không mở 9001, 9002 hoặc 3306 cho máy chơi.
 
 ## 7. Khởi động ServerManager trên máy A
 
@@ -190,6 +198,7 @@ Mở tab **Cấu hình**, nhập:
 |---|---|
 | IP gateway | `192.168.1.10` — thay bằng IPv4 thật máy A |
 | Gateway | `8888` |
+| Game | `9000` |
 | Worker 1 | `9001` |
 | Worker 2 | `9002` |
 | Mật khẩu PFX | Tự đặt, khác mật khẩu DB |
@@ -210,10 +219,10 @@ Thực hiện lần lượt:
 2. Chọn một tệp chưa tồn tại, ví dụ trong `%LOCALAPPDATA%\ChessServer\server.pfx` sau khi tạo thư mục; giữ PFX trên máy A.
 3. Nếu đã tạo PFX trước đây, chọn **Chọn PFX…** và nhập đúng mật khẩu; không tạo lại mỗi lần chạy.
 4. Chọn **Kiểm tra MySQL**. Cần thấy `MySQL: schema auth sẵn sàng`.
-5. Chọn **Khởi động**. Cần thấy `ĐANG CHẠY` và endpoint gateway đúng IP LAN trong tab Vận hành.
+5. Chọn **Khởi động**. Cần thấy `ĐANG CHẠY`, endpoint gateway và game đúng IP LAN trong tab Vận hành.
 6. Quay lại tab Cấu hình, chọn **Sao chép pin**. Pin là chuỗi 64 ký tự hex để cấp cho client qua kênh tin cậy.
 
-Hai worker vẫn chỉ mở loopback. Không chạy đồng thời server console và ServerManager trên cùng ba cổng. Giữ cửa sổ server mở trong lúc thử nghiệm.
+Hai worker vẫn chỉ mở loopback. Không chạy đồng thời server console và ServerManager trên cùng bốn cổng. Giữ cửa sổ server mở trong lúc thử nghiệm.
 
 Nếu máy A đổi IP khi chuyển Wi-Fi hoặc nhận DHCP mới, dừng server rồi cập nhật IP bind và endpoint của client. Việc đổi IP không yêu cầu tạo lại PFX. Việc đổi PFX làm thay đổi pin và cần cập nhật client.
 
@@ -243,6 +252,7 @@ Các máy client dùng cùng phiên bản source và SDK Windows phù hợp nế
 
 ```powershell
 Test-NetConnection 192.168.1.10 -Port 8888
+Test-NetConnection 192.168.1.10 -Port 9000
 ```
 
 Chỉ tiếp tục khi thấy:
@@ -304,11 +314,12 @@ Kết nối auth ngắn, nên số kết nối trên UI có thể trở về 0 n
 | UI báo không truy cập được schema auth | Kiểm tra Database=onlinechessdb, đã chạy đầy đủ script, bảng/cột và quyền SELECT |
 | UI không mở được cổng | IP bind không thuộc máy A, cổng bị chiếm hoặc server console đang chạy |
 | `Test-NetConnection ... -Port 8888` thất bại | Kiểm tra server đang chạy, IP/cổng đúng, firewall đúng profile và Wi-Fi không bật client isolation |
+| `Test-NetConnection ... -Port 9000` thất bại | Kiểm tra game server trong tab Vận hành và firewall cho cổng Game |
 | TCP thành công nhưng client báo TLS | Kiểm tra pin đủ 64 hex và đúng chứng chỉ hiện tại; biến môi trường được đặt trước khi chạy client |
 | Client vẫn trỏ `127.0.0.1` | Đặt endpoint và sửa ô địa chỉ server; khởi chạy lại từ PowerShell đã cấu hình |
 | Đăng ký không tạo được tài khoản | Kiểm tra quyền INSERT trên cả Users và UserGameStats; không chỉ dựa vào nút kiểm tra MySQL vì nút đó chỉ đọc schema |
 | `reset_required` | Tài khoản cũ có mật khẩu dạng rõ; thử tài khoản mới, chưa có quy trình reset tích hợp |
-| Bấm tìm trận rồi không đồng bộ hai máy | Gameplay online chưa hoàn thiện; đây không chỉ là lỗi cài DB hoặc firewall |
+| Bấm tìm trận rồi không ghép hai máy | Kiểm tra game server cổng 9000 trên tab Vận hành, firewall và `gamePort` trên client |
 
 Kiểm tra cổng trên máy A:
 
@@ -317,7 +328,7 @@ Get-NetTCPConnection -State Listen |
     Where-Object { $_.LocalPort -in 8888, 9001, 9002 }
 ```
 
-Cần thấy gateway trên IP LAN và hai worker trên `127.0.0.1`. Ping thất bại chưa đủ kết luận cổng ứng dụng bị chặn; ưu tiên kết quả kiểm tra TCP 8888.
+Cần thấy gateway/game trên IP LAN và hai worker trên `127.0.0.1`. Ping thất bại chưa đủ kết luận cổng ứng dụng bị chặn; kiểm tra TCP 8888 và 9000.
 
 ## 12. Chạy client trên máy không có SDK (tùy chọn)
 
@@ -337,4 +348,6 @@ $env:CHESS_CERT_PIN = Read-Host 'Dan pin SHA-256 tu ServerManager'
 .\OnlineChessGame.exe
 ```
 
-Bản này chứa runtime, không cần cài SDK trên máy client. Vẫn cần đặt endpoint và pin trước khi chạy. Nút Đấu Rank hiện báo đang phát triển; bản publish không làm gameplay LAN trở thành hoàn chỉnh khi server chưa có session, hàng chờ và đồng bộ trận.
+Bản này chứa runtime, không cần cài SDK trên máy client. Vẫn cần đặt endpoint và pin trước khi chạy. Hai client đăng nhập riêng, chọn cùng chế độ ở sảnh rồi bấm **Tìm trận**. Cổng game mặc định `9000`; nếu đổi cổng trên ServerManager, đặt `CHESS_GAME_PORT` hoặc `gamePort` trong `client-config.json` cho cả hai client. Kết quả và Elo sau trận online chưa được lưu.
+
+Game server dùng cùng pin/PFX với auth. Token mở kết nối game có hạn 15 phút và dùng một lần; nếu mất kết nối game, hãy đăng xuất và đăng nhập lại. Không cần tạo chứng chỉ riêng cho game.
