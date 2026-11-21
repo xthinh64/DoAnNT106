@@ -22,14 +22,11 @@ namespace OnlineChessGame
         public DashboardForm()
         {
             InitializeComponent();
-            btnRankedChess.Text = "Tìm trận Cờ Vua";
-            btnRankedCaro.Text = "Tìm trận Cờ Caro";
             queueTimer.Tick += (_, _) => lblQueueTimer.Text = $"Thời gian chờ: {(DateTime.UtcNow - queueStarted):mm\\:ss}";
             GameClient.Instance.OnMatchFound += MatchFound;
             GameClient.Instance.OnDisconnected += GameDisconnected;
             Disposed += (_, _) => DetachNetwork();
             ApplyCurrentTheme();
-            BuildHistoryRows();
         }
 
         public DashboardForm(string playerName, int elo) : this()
@@ -52,7 +49,7 @@ namespace OnlineChessGame
             string initial = string.IsNullOrEmpty(playerName) ? "P" : playerName[..1].ToUpper();
             lblAvatar.Text = initial;
             lblName.Text = playerName;
-            lblElo.Text = $"Elo: {elo}";
+            lblElo.Text = $"Elo · Cờ vua {elo} / Caro {caroElo}";
         }
 
         private void ApplyCardRegions()
@@ -64,7 +61,7 @@ namespace OnlineChessGame
             cardCaro.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, cardCaro.Width, cardCaro.Height), 12));
             pnlTagCaro.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, pnlTagCaro.Width, pnlTagCaro.Height), 6));
             queuePanel.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, queuePanel.Width, queuePanel.Height), 12));
-            cardHistory.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, cardHistory.Width, cardHistory.Height), 12));
+            cardGuide.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, cardGuide.Width, cardGuide.Height), 12));
 
             btnSoloChess.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, btnSoloChess.Width, btnSoloChess.Height), 8));
             btnRankedChess.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, btnRankedChess.Width, btnRankedChess.Height), 8));
@@ -78,11 +75,17 @@ namespace OnlineChessGame
         private void ApplyCurrentTheme()
         {
             BackColor = ThemeColors.Background;
-            header.BackColor = ThemeColors.HeaderBg;
+            header.BackColor = ThemeColors.Surface;
+            lblName.ForeColor = ThemeColors.TextPrimary;
+            lblElo.ForeColor = ThemeColors.TextSecondary;
+            lblAvatar.BackColor = ThemeColors.PrimaryLight;
+            pnlElo.BackColor = ThemeColors.SurfaceAlt;
+            lblGuideTitle.ForeColor = ThemeColors.TextPrimary;
+            lblGuideBody.ForeColor = ThemeColors.TextSecondary;
             lblAvatar.ForeColor = ThemeColors.Primary;
 
             lblModeHeader.ForeColor = ThemeColors.TextSecondary;
-            lblHistHeader.ForeColor = ThemeColors.TextSecondary;
+            lblGuideHeader.ForeColor = ThemeColors.TextSecondary;
 
             cardChess.BackColor = ThemeColors.Surface;
             lblTitleChess.ForeColor = ThemeColors.TextPrimary;
@@ -90,7 +93,9 @@ namespace OnlineChessGame
             pnlTagChess.BackColor = ThemeColors.Primary;
             btnSoloChess.BackColor = ThemeColors.Primary;
             btnSoloChess.ForeColor = ThemeColors.TextOnPrimary;
-            btnRankedChess.BackColor = ThemeColors.Accent;
+            btnRankedChess.BackColor = ThemeColors.PrimaryLight;
+            btnRankedChess.ForeColor = ThemeColors.Primary;
+            lblTagChess.ForeColor = ThemeColors.TextOnPrimary;
 
             cardCaro.BackColor = ThemeColors.Surface;
             lblTitleCaro.ForeColor = ThemeColors.TextPrimary;
@@ -98,106 +103,22 @@ namespace OnlineChessGame
             pnlTagCaro.BackColor = ThemeColors.Accent;
             btnSoloCaro.BackColor = ThemeColors.Primary;
             btnSoloCaro.ForeColor = ThemeColors.TextOnPrimary;
-            btnRankedCaro.BackColor = ThemeColors.Accent;
+            btnRankedCaro.BackColor = ThemeColors.PrimaryLight;
+            btnRankedCaro.ForeColor = ThemeColors.Primary;
+            lblTagCaro.ForeColor = ThemeColors.TextOnPrimary;
 
             queuePanel.BackColor = ThemeColors.Surface;
             lblQueueStatus.ForeColor = ThemeColors.TextPrimary;
             lblQueueTimer.ForeColor = ThemeColors.TextSecondary;
             btnCancelQueue.BackColor = ThemeColors.Danger;
+            btnLogout.BackColor = ThemeColors.SurfaceAlt;
+            btnLogout.ForeColor = ThemeColors.TextPrimary;
 
-            cardHistory.BackColor = ThemeColors.Surface;
+            cardGuide.BackColor = ThemeColors.Surface;
 
-            btnThemeToggle.Text = ThemeColors.CurrentTheme == AppTheme.Light ? "Theme: Sang" : "Theme: Den & Xanh";
+            btnThemeToggle.Text = ThemeColors.CurrentTheme == AppTheme.Light ? "Giao diện sáng" : "Giao diện tối";
             btnThemeToggle.BackColor = ThemeColors.CurrentTheme == AppTheme.Light ? Color.FromArgb(224, 238, 255) : Color.FromArgb(6, 78, 59);
             btnThemeToggle.ForeColor = ThemeColors.CurrentTheme == AppTheme.Light ? Color.FromArgb(37, 99, 235) : Color.FromArgb(52, 211, 153);
-
-            BuildHistoryRows();
-        }
-
-        private void BuildHistoryRows()
-        {
-            cardHistory.Controls.Clear();
-
-            string[,] matchHistory = {
-                { "Co Vua",  "Thang", "GrandMaster_VN", "+18", "10 phut truoc" },
-                { "Co Caro", "Thua",  "Caro_King99",    "-14", "45 phut truoc" },
-                { "Co Vua",  "Thang", "Tactician_07",   "+16", "2 gio truoc" },
-                { "Co Caro", "Hoa",   "PeaceMaker",     "+0",  "Hom qua" },
-                { "Co Vua",  "Thang", "Beginner_Pro",   "+15", "2 ngay truoc" }
-            };
-
-            int startY = 20;
-            int rowH = 74;
-            int rightW = cardHistory.Width;
-
-            for (int i = 0; i < matchHistory.GetLength(0); i++)
-            {
-                int curY = startY + i * (rowH + 12);
-                var row = new Panel
-                {
-                    Location = new Point(20, curY),
-                    Size = new Size(rightW - 40, rowH),
-                    BackColor = ThemeColors.SurfaceAlt
-                };
-                row.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, rightW - 40, rowH), 8));
-                cardHistory.Controls.Add(row);
-
-                string gameType = matchHistory[i, 0];
-                string result = matchHistory[i, 1];
-                string opp = matchHistory[i, 2];
-                string eloDiff = matchHistory[i, 3];
-                string time = matchHistory[i, 4];
-
-                Color badgeBg = result == "Thang" ? ThemeColors.Success : (result == "Hoa" ? ThemeColors.Warning : ThemeColors.Danger);
-
-                var pnlBadge = new Panel
-                {
-                    Location = new Point(14, 18),
-                    Size = new Size(68, 38),
-                    BackColor = badgeBg
-                };
-                pnlBadge.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, 68, 38), 6));
-                var lblBadge = new Label
-                {
-                    Text = result,
-                    Font = ThemeColors.FontButton,
-                    ForeColor = Color.White,
-                    Dock = DockStyle.Fill,
-                    TextAlign = ContentAlignment.MiddleCenter
-                };
-                pnlBadge.Controls.Add(lblBadge);
-                row.Controls.Add(pnlBadge);
-
-                var lblOpp = new Label
-                {
-                    Text = $"[{gameType}] vs {opp}",
-                    Font = ThemeColors.FontHeading,
-                    ForeColor = ThemeColors.TextPrimary,
-                    AutoSize = true,
-                    Location = new Point(94, 16)
-                };
-                row.Controls.Add(lblOpp);
-
-                var lblTime = new Label
-                {
-                    Text = time,
-                    Font = ThemeColors.FontSmall,
-                    ForeColor = ThemeColors.TextSecondary,
-                    AutoSize = true,
-                    Location = new Point(94, 40)
-                };
-                row.Controls.Add(lblTime);
-
-                var lblDiff = new Label
-                {
-                    Text = eloDiff,
-                    Font = new Font("Segoe UI", 13F, FontStyle.Bold),
-                    ForeColor = badgeBg,
-                    AutoSize = true,
-                    Location = new Point(rightW - 40 - 75, 24)
-                };
-                row.Controls.Add(lblDiff);
-            }
         }
 
         private void BtnThemeToggle_Click(object? sender, EventArgs e)
@@ -211,6 +132,7 @@ namespace OnlineChessGame
             _ = CancelMatchAsync();
             GameClient.Instance.Disconnect();
             AuthConnection.GameToken = null;
+            AuthConnection.Player = null;
             OnLogoutRequested?.Invoke();
             Program.Context.SwitchTo(new LoginForm());
         }
@@ -238,7 +160,7 @@ namespace OnlineChessGame
 
         private void BtnSoloCaro_Click(object? sender, EventArgs e)
         {
-            Program.Context.SwitchTo(new CaroBoardForm(playerName, caroElo, "Computer Caro", 1200, isSolo: true));
+            Program.Context.SwitchTo(new CaroBoardForm(playerName, caroElo, "Caro Engine", 1200, isSolo: true));
         }
 
         private void BtnRankedCaro_Click(object? sender, EventArgs e)
@@ -250,6 +172,8 @@ namespace OnlineChessGame
         {
             if (queuedMode is not null) return;
             queuedMode = gameType;
+            cardGuide.Visible = false;
+            btnSoloChess.Enabled = btnSoloCaro.Enabled = false;
             btnRankedChess.Enabled = btnRankedCaro.Enabled = false;
             lblQueueStatus.Text = gameType == "CHESS" ? "Đang tìm đối thủ Cờ Vua..." : "Đang tìm đối thủ Cờ Caro...";
             lblQueueTimer.Text = "Thời gian chờ: 00:00";
@@ -267,6 +191,7 @@ namespace OnlineChessGame
             }
             catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or InvalidOperationException or ArgumentException or TimeoutException or System.Security.Authentication.AuthenticationException or OperationCanceledException)
             {
+                if (IsDisposed) return;
                 ResetQueue();
                 MessageBox.Show($"Không kết nối được game server {AuthConnection.GamePort}: {ex.Message}",
                     "Lỗi tìm trận", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -289,6 +214,8 @@ namespace OnlineChessGame
             queuedMode = null;
             queueTimer.Stop();
             queuePanel.Visible = false;
+            cardGuide.Visible = true;
+            btnSoloChess.Enabled = btnSoloCaro.Enabled = true;
             btnRankedChess.Enabled = btnRankedCaro.Enabled = true;
         }
 

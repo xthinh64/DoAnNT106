@@ -8,6 +8,23 @@ sẵn .NET runtime và Stockfish; máy người chơi không cần chạy script
 
 **Hiện trạng:** đăng ký/đăng nhập qua server, chơi Solo và ghép hai người qua LAN cho cờ vua/cờ caro đã có. Game server chuyển nước đi, chat, đầu hàng, cầu hòa và rời phòng. Kênh game dùng TLS 1.2/1.3 và token phiên cấp sau đăng nhập; chưa lưu kết quả/Elo hoặc kiểm tra nước đi ở server.
 
+## Giao diện và Caro với máy
+
+- Đăng nhập bằng **Username + Password**; không điền sẵn hay lưu mật khẩu. Mở **Cấu hình kết nối** khi cần đổi auth server; vẫn cần certificate pin trong cấu hình client.
+- Đăng ký giữ mật khẩu xác nhận; tên hiển thị không bắt buộc, bỏ trống sẽ dùng username.
+- Trong sảnh, chọn **Cờ Caro → Chơi với máy**. Engine C# đi cục bộ, không cần tải file/API: ưu tiên nước thắng, chặn nước thắng của bạn và đánh giá thế tấn công/phòng thủ.
+- Caro dùng luật có sẵn: từ 5 quân liên tiếp là thắng (không áp dụng chặn hai đầu hay Renju). **Ván mới** khởi động lại ván Solo; **Về sảnh** dừng ván hiện tại.
+- Bấm bàn cờ hoặc dùng Tab tới bàn, phím mũi tên để chọn ô, Enter/Space đặt X/O. Kết quả hiện ngay trên bàn; sảnh không hiển thị lịch sử mẫu.
+
+Kiểm tra thay đổi:
+
+```powershell
+dotnet test Tests/CaroTests/CaroTests.csproj
+dotnet run --project Tests/UiSmoke/UiSmoke.csproj
+python -m unittest discover -s Tests -p "test_*ui_contract.py" -v
+dotnet build Design/OnlineChessGame.csproj
+```
+
 ## Chọn hướng dẫn
 
 - [Thiết lập từ đầu: MySQL, chứng chỉ và chạy cùng máy](#bắt-đầu-từ-đâu).

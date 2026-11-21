@@ -53,6 +53,11 @@ namespace OnlineChessGame
             this.boardPanel.Name = "boardPanel";
             this.boardPanel.Size = new System.Drawing.Size(624, 624);
             this.boardPanel.TabIndex = 0;
+            this.boardPanel.TabStop = true;
+            this.boardPanel.AccessibleName = "Bàn Caro 15 × 15";
+            this.boardPanel.AccessibleDescription = "Dùng phím mũi tên chọn ô, Enter hoặc Space đặt quân.";
+            this.boardPanel.KeyDown += new System.Windows.Forms.KeyEventHandler(this.BoardPanel_KeyDown);
+            this.boardPanel.PreviewKeyDown += new System.Windows.Forms.PreviewKeyDownEventHandler(this.BoardPanel_PreviewKeyDown);
             this.boardPanel.Paint += new System.Windows.Forms.PaintEventHandler(this.BoardPanel_Paint);
             this.boardPanel.MouseClick += new System.Windows.Forms.MouseEventHandler(this.BoardPanel_Click);
             // 
@@ -82,12 +87,13 @@ namespace OnlineChessGame
             // 
             // lblNameOpp
             // 
-            this.lblNameOpp.AutoSize = true;
-            this.lblNameOpp.Font = new System.Drawing.Font("Segoe UI Semibold", 13F, System.Drawing.FontStyle.Bold);
+            this.lblNameOpp.AutoSize = false;
+            this.lblNameOpp.AutoEllipsis = true;
+            this.lblNameOpp.Font = new System.Drawing.Font("Segoe UI Semibold", 11F, System.Drawing.FontStyle.Bold);
             this.lblNameOpp.ForeColor = System.Drawing.Color.FromArgb(15, 23, 42);
             this.lblNameOpp.Location = new System.Drawing.Point(68, 16);
             this.lblNameOpp.Name = "lblNameOpp";
-            this.lblNameOpp.Size = new System.Drawing.Size(217, 25);
+            this.lblNameOpp.Size = new System.Drawing.Size(210, 25);
             this.lblNameOpp.TabIndex = 1;
             this.lblNameOpp.Text = "Computer Caro [Quan O]";
             // 
@@ -126,7 +132,7 @@ namespace OnlineChessGame
             // lblTurn
             // 
             this.lblTurn.BackColor = System.Drawing.Color.FromArgb(224, 238, 255);
-            this.lblTurn.Font = new System.Drawing.Font("Segoe UI Semibold", 13F, System.Drawing.FontStyle.Bold);
+            this.lblTurn.Font = new System.Drawing.Font("Segoe UI Semibold", 11F, System.Drawing.FontStyle.Bold);
             this.lblTurn.ForeColor = System.Drawing.Color.FromArgb(37, 99, 235);
             this.lblTurn.Location = new System.Drawing.Point(672, 112);
             this.lblTurn.Name = "lblTurn";
@@ -161,12 +167,13 @@ namespace OnlineChessGame
             // 
             // lblNamePlayer
             // 
-            this.lblNamePlayer.AutoSize = true;
-            this.lblNamePlayer.Font = new System.Drawing.Font("Segoe UI Semibold", 13F, System.Drawing.FontStyle.Bold);
+            this.lblNamePlayer.AutoSize = false;
+            this.lblNamePlayer.AutoEllipsis = true;
+            this.lblNamePlayer.Font = new System.Drawing.Font("Segoe UI Semibold", 11F, System.Drawing.FontStyle.Bold);
             this.lblNamePlayer.ForeColor = System.Drawing.Color.FromArgb(15, 23, 42);
             this.lblNamePlayer.Location = new System.Drawing.Point(68, 16);
             this.lblNamePlayer.Name = "lblNamePlayer";
-            this.lblNamePlayer.Size = new System.Drawing.Size(209, 25);
+            this.lblNamePlayer.Size = new System.Drawing.Size(210, 25);
             this.lblNamePlayer.TabIndex = 1;
             this.lblNamePlayer.Text = "Kỳ thủ VN [Quan X]";
             // 
@@ -214,7 +221,7 @@ namespace OnlineChessGame
             this.btnDraw.Name = "btnDraw";
             this.btnDraw.Size = new System.Drawing.Size(121, 36);
             this.btnDraw.TabIndex = 4;
-            this.btnDraw.Text = "Cau hoa";
+            this.btnDraw.Text = "Cầu hòa";
             this.btnDraw.UseVisualStyleBackColor = false;
             this.btnDraw.Click += new System.EventHandler(this.BtnDraw_Click);
             // 
@@ -230,7 +237,7 @@ namespace OnlineChessGame
             this.btnSurr.Name = "btnSurr";
             this.btnSurr.Size = new System.Drawing.Size(121, 36);
             this.btnSurr.TabIndex = 5;
-            this.btnSurr.Text = "Dau hang";
+            this.btnSurr.Text = "Đầu hàng";
             this.btnSurr.UseVisualStyleBackColor = false;
             this.btnSurr.Click += new System.EventHandler(this.BtnSurr_Click);
             // 
@@ -246,20 +253,20 @@ namespace OnlineChessGame
             this.btnLeave.Name = "btnLeave";
             this.btnLeave.Size = new System.Drawing.Size(121, 36);
             this.btnLeave.TabIndex = 6;
-            this.btnLeave.Text = "Ve Sanh";
+            this.btnLeave.Text = "Về sảnh";
             this.btnLeave.UseVisualStyleBackColor = false;
             this.btnLeave.Click += new System.EventHandler(this.BtnLeave_Click);
             // 
             // lblChatTitle
             // 
             this.lblChatTitle.AutoSize = true;
-            this.lblChatTitle.Font = new System.Drawing.Font("Segoe UI Semibold", 13F, System.Drawing.FontStyle.Bold);
+            this.lblChatTitle.Font = new System.Drawing.Font("Segoe UI Semibold", 11F, System.Drawing.FontStyle.Bold);
             this.lblChatTitle.ForeColor = System.Drawing.Color.FromArgb(15, 23, 42);
             this.lblChatTitle.Location = new System.Drawing.Point(672, 306);
             this.lblChatTitle.Name = "lblChatTitle";
             this.lblChatTitle.Size = new System.Drawing.Size(189, 25);
             this.lblChatTitle.TabIndex = 7;
-            this.lblChatTitle.Text = "Tro chuyen trong tran";
+            this.lblChatTitle.Text = "Trò chuyện";
             // 
             // btnThemeToggle
             // 
@@ -296,7 +303,7 @@ namespace OnlineChessGame
             this.txtChat.Font = new System.Drawing.Font("Segoe UI", 9.5F);
             this.txtChat.Location = new System.Drawing.Point(672, 614);
             this.txtChat.Name = "txtChat";
-            this.txtChat.PlaceholderText = "Nhap tin nhan...";
+            this.txtChat.PlaceholderText = "Nhập tin nhắn...";
             this.txtChat.Size = new System.Drawing.Size(302, 24);
             this.txtChat.TabIndex = 10;
             this.txtChat.KeyDown += new System.Windows.Forms.KeyEventHandler(this.TxtChat_KeyDown);
@@ -313,7 +320,7 @@ namespace OnlineChessGame
             this.btnSend.Name = "btnSend";
             this.btnSend.Size = new System.Drawing.Size(70, 32);
             this.btnSend.TabIndex = 11;
-            this.btnSend.Text = "Gui";
+            this.btnSend.Text = "Gửi";
             this.btnSend.UseVisualStyleBackColor = false;
             this.btnSend.Click += new System.EventHandler(this.BtnSend_Click);
             // 
@@ -339,7 +346,7 @@ namespace OnlineChessGame
             this.MaximizeBox = false;
             this.Name = "CaroBoardForm";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
-            this.Text = "Chess Online - Co Caro";
+            this.Text = "Chess & Caro Online — Cờ Caro";
             this.Load += new System.EventHandler(this.CaroBoardForm_Load);
             this.cardOpp.ResumeLayout(false);
             this.cardOpp.PerformLayout();
