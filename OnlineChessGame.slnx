@@ -1,6 +1,8 @@
 <Solution>
   <Project Path="Design/OnlineChessGame.csproj" />
   <Project Path="Chess/OnlineChessGame.Chess.csproj" />
+  <Project Path="Caro/OnlineChessGame.Caro.csproj" />
+  <Project Path="Tests/CaroTests/CaroTests.csproj" />
   <Project Path="Server/OnlineChessGame.Server.csproj" />
   <Project Path="ServerManager/OnlineChessGame.ServerManager.csproj" />
   <Project Path="Network/OnlineChessGame.Network.csproj" />
