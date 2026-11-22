@@ -31,6 +31,16 @@
           }
         }
       },
+      "OnlineChessGame.Caro/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v8.0",
+        "compile": {
+          "bin/placeholder/OnlineChessGame.Caro.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/OnlineChessGame.Caro.dll": {}
+        }
+      },
       "OnlineChessGame.Chess/1.0.0": {
         "type": "project",
         "framework": ".NETCoreApp,Version=v8.0",
@@ -87,6 +97,11 @@
         "lib/net8.0/ChessLibrary.xml"
       ]
     },
+    "OnlineChessGame.Caro/1.0.0": {
+      "type": "project",
+      "path": "../Caro/OnlineChessGame.Caro.csproj",
+      "msbuildProject": "../Caro/OnlineChessGame.Caro.csproj"
+    },
     "OnlineChessGame.Chess/1.0.0": {
       "type": "project",
       "path": "../Chess/OnlineChessGame.Chess.csproj",
@@ -100,6 +115,7 @@
   },
   "projectFileDependencyGroups": {
     "net8.0-windows": [
+      "OnlineChessGame.Caro >= 1.0.0",
       "OnlineChessGame.Chess >= 1.0.0",
       "OnlineChessGame.Network >= 1.0.0"
     ]
@@ -132,6 +148,9 @@
           "framework": "net8.0-windows7.0",
           "targetAlias": "net8.0-windows",
           "projectReferences": {
+            "Q:\\DoAnNT106\\Caro\\OnlineChessGame.Caro.csproj": {
+              "projectPath": "Q:\\DoAnNT106\\Caro\\OnlineChessGame.Caro.csproj"
+            },
             "Q:\\DoAnNT106\\Chess\\OnlineChessGame.Chess.csproj": {
               "projectPath": "Q:\\DoAnNT106\\Chess\\OnlineChessGame.Chess.csproj"
             },

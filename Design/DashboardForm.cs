@@ -147,7 +147,7 @@ namespace OnlineChessGame
             Program.Context.SwitchTo(new ChessBoardForm(
                 playerName,
                 elo,
-                $"Stockfish - {difficulty.DisplayName}",
+                $"Máy - {difficulty.DisplayName}",
                 difficulty.DisplayElo,
                 isSolo: true,
                 difficulty));

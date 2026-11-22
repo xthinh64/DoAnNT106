@@ -8,7 +8,7 @@ internal sealed class ChessDifficultyDialog : Form
 
     public ChessDifficultyDialog()
     {
-        Text = "Chọn độ khó Stockfish";
+        Text = "Chọn độ khó cờ vua";
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -37,11 +37,12 @@ internal sealed class ChessDifficultyDialog : Form
         Controls.Add(subtitle);
 
         int y = 96;
-        foreach (ChessDifficulty difficulty in ChessDifficulty.All)
+        bool local = StockfishClient.FindExecutable() is null;
+        foreach (ChessDifficulty difficulty in ChessDifficulty.All.Where(d => !local || d != ChessDifficulty.Expert))
         {
             var button = new Button
             {
-                Text = $"{difficulty.DisplayName}  •  Elo khoảng {difficulty.DisplayElo}\r\n{difficulty.Description}",
+                Text = local ? difficulty.DisplayName : $"{difficulty.DisplayName}  •  Elo khoảng {difficulty.DisplayElo}\r\n{difficulty.Description}",
                 Tag = difficulty,
                 Font = new Font("Segoe UI", 10F, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft,

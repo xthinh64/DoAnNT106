@@ -6,6 +6,20 @@ namespace ChessTests;
 
 public sealed class ChessGameStateTests
 {
+    [Theory]
+    [InlineData("easy")]
+    [InlineData("medium")]
+    [InlineData("hard")]
+    public void LocalEngineCanReplyWithoutExecutable(string level)
+    {
+        var game = new ChessGameState();
+        Apply(game, "f2f3", "e7e5", "g2g4");
+        var difficulty = ChessDifficulty.All.Single(d => d.Id == level);
+        string reply = LocalChessEngine.ChooseMove(game.Fen, difficulty);
+        Assert.Contains(reply, game.GetAllLegalMoves());
+        if (difficulty != ChessDifficulty.Easy) Assert.Equal("d8h4", reply);
+    }
+
     [Fact]
     public void InitialPositionHasTwentyLegalMoves()
     {
