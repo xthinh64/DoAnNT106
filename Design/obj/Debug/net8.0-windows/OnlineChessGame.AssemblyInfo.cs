@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("OnlineChessGame")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+0b414f00d7b556f697353a48a2d5503aa88d3b46")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+75712181631117e95750cf8808f11810c51ab967")]
 [assembly: System.Reflection.AssemblyProductAttribute("OnlineChessGame")]
 [assembly: System.Reflection.AssemblyTitleAttribute("OnlineChessGame")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

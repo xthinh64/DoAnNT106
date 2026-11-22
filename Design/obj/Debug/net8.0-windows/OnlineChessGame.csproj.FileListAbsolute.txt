@@ -72,3 +72,5 @@ Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\Engines\Stockfish\AUTHORS
 Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\Engines\Stockfish\Copying.txt
 Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\Engines\Stockfish\stockfish.exe
 Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\Engines\Stockfish\SETUP.md
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\OnlineChessGame.Caro.dll
+Q:\DoAnNT106\Design\bin\Debug\net8.0-windows\OnlineChessGame.Caro.pdb

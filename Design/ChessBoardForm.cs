@@ -32,6 +32,7 @@ namespace OnlineChessGame
         private readonly ChessGameState chessState = new();
         private ChessDifficulty difficulty = ChessDifficulty.Medium;
         private StockfishClient? stockfish;
+        private bool useLocalEngine;
         private readonly CancellationTokenSource lifetimeCancellation = new();
         private bool engineResourcesDisposed;
         private IReadOnlyList<string> selectedLegalMoves = Array.Empty<string>();
@@ -419,12 +420,16 @@ namespace OnlineChessGame
             UpdateTurnBanner();
             try
             {
-                if (!await EnsureStockfishReadyAsync(showError: true) || stockfish is null)
+                if (!await EnsureStockfishReadyAsync(showError: true))
                     return;
 
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetimeCancellation.Token);
                 timeout.CancelAfter(TimeSpan.FromSeconds(15));
-                string bestMove = await stockfish.GetBestMoveAsync(chessState.Fen, timeout.Token);
+                string fen = chessState.Fen;
+                string bestMove = useLocalEngine
+                    ? await Task.Run(() => LocalChessEngine.ChooseMove(fen, difficulty, timeout.Token), timeout.Token)
+                    : await stockfish!.GetBestMoveAsync(fen, timeout.Token);
+                if (gameOver || lifetimeCancellation.IsCancellationRequested) return;
                 ApplyUciMove(bestMove, notifyNetwork: false);
             }
             catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
@@ -561,17 +566,15 @@ namespace OnlineChessGame
             if (!isSolo)
                 return false;
 
-            if (stockfish is not null)
+            if (useLocalEngine || stockfish is not null)
                 return true;
 
             string? executable = StockfishClient.FindExecutable();
             if (executable is null)
             {
-                if (showError)
-                    ShowEngineError(
-                        "Chưa tìm thấy Stockfish. Hãy chạy scripts\\setup-stockfish.ps1, " +
-                        "sau đó build/chạy lại ứng dụng.");
-                return false;
+                useLocalEngine = true;
+                AddChatMessage("He thong", $"Máy chơi cục bộ ở mức {difficulty.DisplayName}.");
+                return true;
             }
 
             try
