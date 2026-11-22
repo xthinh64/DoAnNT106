@@ -17,14 +17,35 @@ namespace OnlineChessGame
         private void RegisterForm_Load(object? sender, EventArgs e)
         {
             CenterCard();
+            ActiveControl = txtUser;
         }
 
         private void CenterCard()
         {
-            card.Location = new Point((ClientSize.Width - card.Width) / 2, (ClientSize.Height - card.Height) / 2);
+            card.Location = new Point(Math.Max(16, (ClientSize.Width - card.Width) / 2), Math.Max(16, (ClientSize.Height - card.Height) / 2));
             card.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, card.Width, card.Height), 16));
             btnRegister.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, btnRegister.Width, btnRegister.Height), 10));
             btnThemeToggle.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, btnThemeToggle.Width, btnThemeToggle.Height), 8));
+        }
+
+        private void RegisterForm_Resize(object? sender, EventArgs e)
+        {
+            CenterCard();
+        }
+
+        private void ChkShowPassword_CheckedChanged(object? sender, EventArgs e)
+        {
+            txtPass.UseSystemPasswordChar = !chkShowPassword.Checked;
+            txtConfirm.UseSystemPasswordChar = !chkShowPassword.Checked;
+        }
+
+        private void SetBusy(bool busy)
+        {
+            txtUser.Enabled = txtPass.Enabled = chkShowPassword.Enabled = !busy;
+            txtConfirm.Enabled = txtDisplay.Enabled = !busy;
+            btnRegister.Enabled = btnBack.Enabled = !busy;
+            btnRegister.Text = busy ? "Đang tạo tài khoản…" : "Tạo tài khoản";
+            UseWaitCursor = busy;
         }
 
         private void ApplyCurrentTheme()
@@ -50,6 +71,7 @@ namespace OnlineChessGame
             txtConfirm.BackColor = ThemeColors.InputBg;
             txtConfirm.ForeColor = ThemeColors.InputFg;
 
+            chkShowPassword.ForeColor = ThemeColors.TextSecondary;
             lblError.ForeColor = ThemeColors.Danger;
 
             btnRegister.BackColor = ThemeColors.Primary;
@@ -57,9 +79,9 @@ namespace OnlineChessGame
 
             btnBack.ForeColor = ThemeColors.Primary;
 
-            btnThemeToggle.Text = ThemeColors.CurrentTheme == AppTheme.Light ? "Theme: Sang" : "Theme: Den & Xanh";
-            btnThemeToggle.BackColor = ThemeColors.CurrentTheme == AppTheme.Light ? Color.FromArgb(224, 238, 255) : Color.FromArgb(6, 78, 59);
-            btnThemeToggle.ForeColor = ThemeColors.CurrentTheme == AppTheme.Light ? Color.FromArgb(37, 99, 235) : Color.FromArgb(52, 211, 153);
+            btnThemeToggle.Text = ThemeColors.CurrentTheme == AppTheme.Light ? "Giao diện sáng" : "Giao diện tối";
+            btnThemeToggle.BackColor = ThemeColors.PrimaryLight;
+            btnThemeToggle.ForeColor = ThemeColors.Primary;
         }
 
         private void BtnThemeToggle_Click(object? sender, EventArgs e)
@@ -72,24 +94,28 @@ namespace OnlineChessGame
         {
             string user = txtUser.Text.Trim();
             string display = txtDisplay.Text.Trim();
+            if (string.IsNullOrWhiteSpace(display)) display = user;
             string pass = txtPass.Text;
-            if (string.IsNullOrWhiteSpace(user) || user.Length > 50 || string.IsNullOrWhiteSpace(display) || display.Length > 100)
+            if (string.IsNullOrWhiteSpace(user) || user.Length > 50 || display.Length > 100)
             {
-                lblError.Text = "Tài khoản tối đa 50, tên hiển thị tối đa 100 ký tự.";
+                lblError.Text = "Nhập tên đăng nhập (tối đa 50 ký tự); tên hiển thị tối đa 100 ký tự.";
+                (string.IsNullOrWhiteSpace(user) || user.Length > 50 ? txtUser : txtDisplay).Focus();
                 return;
             }
             if (pass.Length < 8 || pass.Length > 128)
             {
                 lblError.Text = "Mật khẩu phải có từ 8 đến 128 ký tự.";
+                txtPass.Focus();
                 return;
             }
             if (pass != txtConfirm.Text)
             {
                 lblError.Text = "Mật khẩu xác nhận không trùng khớp.";
+                txtConfirm.Focus();
                 return;
             }
-            btnRegister.Enabled = btnBack.Enabled = false;
-            lblError.Text = "Đang đăng ký qua TLS...";
+            SetBusy(true);
+            lblError.Text = "Đang tạo tài khoản qua kết nối bảo mật…";
             try
             {
                 var result = await AuthConnection.CreateClient().SendAsync(
@@ -99,20 +125,25 @@ namespace OnlineChessGame
                 txtConfirm.Clear();
                 if (result.Success)
                 {
-                    MessageBox.Show("Tạo tài khoản thành công. Hãy đăng nhập.", "Thông báo");
-                    Program.Context.SwitchTo(new LoginForm());
+                    Program.Context.SwitchTo(new LoginForm(user, "Tạo tài khoản thành công. Nhập mật khẩu để đăng nhập."));
                     return;
                 }
-                lblError.Text = result.Message;
+                lblError.Text = result.Code switch
+                {
+                    "username_taken" => "Tên đăng nhập đã được sử dụng. Vui lòng chọn tên khác.",
+                    "invalid_request" => "Thông tin đăng ký không hợp lệ. Kiểm tra các trường bên trên.",
+                    "service_unavailable" => "Dịch vụ đăng ký tạm thời không khả dụng. Vui lòng thử lại.",
+                    _ => "Không thể tạo tài khoản. Vui lòng thử lại."
+                };
             }
             catch (OperationCanceledException) { if (!IsDisposed) lblError.Text = "Kết nối đã hủy hoặc hết thời gian chờ."; }
             catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or System.Security.Authentication.AuthenticationException or ArgumentException or InvalidOperationException)
             {
-                if (!IsDisposed) lblError.Text = "Không thể kết nối TLS. Kiểm tra server và pin chứng chỉ.";
+                if (!IsDisposed) lblError.Text = "Không thể kết nối TLS. Kiểm tra máy chủ và mã ghim chứng chỉ.";
             }
             finally
             {
-                if (!IsDisposed) btnRegister.Enabled = btnBack.Enabled = true;
+                if (!IsDisposed) SetBusy(false);
             }
         }
 

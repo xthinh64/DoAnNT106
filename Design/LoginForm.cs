@@ -13,22 +13,46 @@ namespace OnlineChessGame
             ApplyCurrentTheme();
             Disposed += (_, _) => { lifetime.Cancel(); lifetime.Dispose(); };
             txtServer.Text = AuthConnection.Endpoint;
-            chkRemember.Checked = false;
-            chkRemember.Enabled = false;
-            chkRemember.Text = "Không lưu mật khẩu trên máy";
+        }
+
+        public LoginForm(string username, string status) : this()
+        {
+            txtUser.Text = username;
+            lblError.Text = status;
+            ActiveControl = txtPass;
         }
 
         private void LoginForm_Load(object? sender, EventArgs e)
         {
             CenterCard();
+            ActiveControl = txtUser.Text.Length == 0 ? txtUser : txtPass;
         }
 
         private void CenterCard()
         {
-            card.Location = new Point((ClientSize.Width - card.Width) / 2, (ClientSize.Height - card.Height) / 2);
+            card.Location = new Point(Math.Max(16, (ClientSize.Width - card.Width) / 2), Math.Max(16, (ClientSize.Height - card.Height) / 2));
             card.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, card.Width, card.Height), 16));
             btnLogin.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, btnLogin.Width, btnLogin.Height), 10));
             btnThemeToggle.Region = new Region(UIHelper.RoundedRect(new Rectangle(0, 0, btnThemeToggle.Width, btnThemeToggle.Height), 8));
+        }
+
+        private void LoginForm_Resize(object? sender, EventArgs e)
+        {
+            CenterCard();
+        }
+
+        private void ChkShowPassword_CheckedChanged(object? sender, EventArgs e)
+        {
+            txtPass.UseSystemPasswordChar = !chkShowPassword.Checked;
+        }
+
+        private void SetBusy(bool busy)
+        {
+            txtUser.Enabled = txtPass.Enabled = chkShowPassword.Enabled = !busy;
+            btnLogin.Enabled = btnRegister.Enabled = !busy;
+            btnConnection.Enabled = txtServer.Enabled = !busy;
+            btnLogin.Text = busy ? "Đang đăng nhập…" : "Đăng nhập";
+            UseWaitCursor = busy;
         }
 
         private void ApplyCurrentTheme()
@@ -50,7 +74,8 @@ namespace OnlineChessGame
             txtServer.BackColor = ThemeColors.InputBg;
             txtServer.ForeColor = ThemeColors.InputFg;
 
-            chkRemember.ForeColor = ThemeColors.TextSecondary;
+            btnConnection.ForeColor = ThemeColors.TextSecondary;
+            chkShowPassword.ForeColor = ThemeColors.TextSecondary;
             lblError.ForeColor = ThemeColors.Danger;
 
             btnLogin.BackColor = ThemeColors.Primary;
@@ -58,9 +83,9 @@ namespace OnlineChessGame
 
             btnRegister.ForeColor = ThemeColors.Primary;
 
-            btnThemeToggle.Text = ThemeColors.CurrentTheme == AppTheme.Light ? "Theme: Sang" : "Theme: Den & Xanh";
-            btnThemeToggle.BackColor = ThemeColors.CurrentTheme == AppTheme.Light ? Color.FromArgb(224, 238, 255) : Color.FromArgb(6, 78, 59);
-            btnThemeToggle.ForeColor = ThemeColors.CurrentTheme == AppTheme.Light ? Color.FromArgb(37, 99, 235) : Color.FromArgb(52, 211, 153);
+            btnThemeToggle.Text = ThemeColors.CurrentTheme == AppTheme.Light ? "Giao diện sáng" : "Giao diện tối";
+            btnThemeToggle.BackColor = ThemeColors.PrimaryLight;
+            btnThemeToggle.ForeColor = ThemeColors.Primary;
         }
 
         private void BtnThemeToggle_Click(object? sender, EventArgs e)
@@ -69,17 +94,27 @@ namespace OnlineChessGame
             ApplyCurrentTheme();
         }
 
+        private void BtnConnection_Click(object? sender, EventArgs e)
+        {
+            pnlConnection.Visible = !pnlConnection.Visible;
+            btnConnection.Text = pnlConnection.Visible ? "Ẩn cấu hình kết nối" : "Cấu hình kết nối";
+            card.Height = pnlConnection.Visible ? pnlConnection.Bottom + 24 : btnConnection.Bottom + 32;
+            CenterCard();
+            if (pnlConnection.Visible) txtServer.Focus();
+        }
+
         private async void BtnLogin_Click(object? sender, EventArgs e)
         {
             string user = txtUser.Text.Trim();
             string pass = txtPass.Text;
             if (string.IsNullOrWhiteSpace(user) || string.IsNullOrEmpty(pass))
             {
-                lblError.Text = "Vui lòng nhập tài khoản và mật khẩu.";
+                lblError.Text = "Vui lòng nhập tên đăng nhập và mật khẩu.";
+                (string.IsNullOrWhiteSpace(user) ? txtUser : txtPass).Focus();
                 return;
             }
-            btnLogin.Enabled = btnRegister.Enabled = false;
-            lblError.Text = "Đang kết nối bảo mật...";
+            SetBusy(true);
+            lblError.Text = "Đang xác thực qua kết nối bảo mật…";
             try
             {
                 AuthConnection.Endpoint = txtServer.Text.Trim();
@@ -94,16 +129,23 @@ namespace OnlineChessGame
                     Program.Context.SwitchTo(new DashboardForm(player.Username, player.ChessElo));
                     return;
                 }
-                lblError.Text = result.Message;
+                lblError.Text = result.Code switch
+                {
+                    "invalid_credentials" => "Tên đăng nhập hoặc mật khẩu không đúng.",
+                    "invalid_request" => "Thông tin đăng nhập không hợp lệ.",
+                    "reset_required" => "Tài khoản cần đặt lại mật khẩu. Vui lòng liên hệ quản trị viên.",
+                    "service_unavailable" => "Dịch vụ đăng nhập tạm thời không khả dụng. Vui lòng thử lại.",
+                    _ => "Không thể đăng nhập. Vui lòng thử lại."
+                };
             }
             catch (OperationCanceledException) { if (!IsDisposed) lblError.Text = "Kết nối đã hủy hoặc hết thời gian chờ."; }
             catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or System.Security.Authentication.AuthenticationException or ArgumentException or InvalidOperationException)
             {
-                if (!IsDisposed) lblError.Text = "Không thể kết nối TLS. Kiểm tra server và pin chứng chỉ.";
+                if (!IsDisposed) lblError.Text = "Không thể kết nối TLS. Kiểm tra máy chủ và mã ghim chứng chỉ.";
             }
             finally
             {
-                if (!IsDisposed) btnLogin.Enabled = btnRegister.Enabled = true;
+                if (!IsDisposed) SetBusy(false);
             }
         }
 

@@ -1,3 +1,4 @@
+using OnlineChessGame.Caro;
 using OnlineChessGame.Network;
 
 namespace OnlineChessGame
@@ -22,7 +23,7 @@ namespace OnlineChessGame
 
         // Thông tin người chơi
         private string p1Name = "Kỳ thủ VN";
-        private string p2Name = "Computer Caro";
+        private string p2Name = "Caro Engine";
         private int p1Elo = 1200;
         private int p2Elo = 1200;
 
@@ -30,6 +31,9 @@ namespace OnlineChessGame
         private int p1Time = 600;
         private int p2Time = 600;
         private System.Windows.Forms.Timer? gameTimer;
+        private System.Windows.Forms.Timer? botDelay;
+        private string? outcome;
+        private (int Row, int Column) selectedCell = (7, 7);
 
         // === EVENT: Network Hooks sẵn sàng nối Socket TCP ===
         public event Action<int, int>? OnCaroMoveMade;
@@ -49,6 +53,7 @@ namespace OnlineChessGame
             {
                 _ = LeaveOnlineGameAsync();
                 gameTimer?.Dispose();
+                botDelay?.Dispose();
             };
         }
 
@@ -63,7 +68,11 @@ namespace OnlineChessGame
             isPlayerTurn = isFirstPlayer;
 
             UpdatePlayerHeaders();
-            if (isSolo) StartGameTimer();
+            if (isSolo)
+            {
+                StartGameTimer();
+                if (!isFirstPlayer) ScheduleBotMove();
+            }
             else
             {
                 lblTimerPlayer.Text = lblTimerOpp.Text = "--:--";
@@ -75,11 +84,17 @@ namespace OnlineChessGame
         {
             UpdatePlayerHeaders();
             ApplyCardRegions();
-            AddChatMessage("He thong", "Tran dau Co Caro da bat dau. Chuc 2 ky thu thi dau tot!");
+            btnDraw.Text = isSolo ? "Ván mới" : "Cầu hòa";
+            txtChat.Enabled = btnSend.Enabled = !isSolo;
+            lblChatTitle.Text = isSolo ? "Nhật ký ván cờ" : "Trò chuyện";
+            AddChatMessage("He thong", "Nối từ 5 quân ngang, dọc hoặc chéo để thắng.");
+            if (isSolo) AddChatMessage("He thong", "Engine chạy cục bộ: ưu tiên thắng, chặn và tạo thế cờ.");
         }
 
         private static void EnableDoubleBuffering(Control c)
         {
+            typeof(Control).GetMethod("SetStyle", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(c, new object[] { ControlStyles.Selectable, true });
             typeof(Control).InvokeMember("DoubleBuffered",
                 System.Reflection.BindingFlags.SetProperty | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
                 null, c, new object[] { true });
@@ -91,12 +106,12 @@ namespace OnlineChessGame
             string init2 = string.IsNullOrEmpty(p2Name) ? "C" : p2Name[..1].ToUpper();
 
             lblAvatarPlayer.Text = init1;
-            lblNamePlayer.Text = $"{p1Name} [Quan {(isFirstPlayer ? "X" : "O")}]";
+            lblNamePlayer.Text = $"{p1Name} · {(isFirstPlayer ? "X" : "O")}";
             lblEloPlayer.Text = $"Elo: {p1Elo}";
 
             lblAvatarOpp.Text = init2;
-            lblNameOpp.Text = $"{p2Name} [Quan {(isFirstPlayer ? "O" : "X")}]";
-            lblEloOpp.Text = $"Elo: {p2Elo}";
+            lblNameOpp.Text = $"{p2Name} · {(isFirstPlayer ? "O" : "X")}";
+            lblEloOpp.Text = isSolo ? "Engine cục bộ" : $"Elo: {p2Elo}";
 
             UpdateTurnBanner();
         }
@@ -153,7 +168,7 @@ namespace OnlineChessGame
             btnSend.BackColor = ThemeColors.Primary;
             btnSend.ForeColor = ThemeColors.TextOnPrimary;
 
-            btnThemeToggle.Text = ThemeColors.CurrentTheme == AppTheme.Light ? "Theme: Sang" : "Theme: Den & Xanh";
+            btnThemeToggle.Text = ThemeColors.CurrentTheme == AppTheme.Light ? "Giao diện sáng" : "Giao diện tối";
             btnThemeToggle.BackColor = ThemeColors.CurrentTheme == AppTheme.Light ? Color.FromArgb(224, 238, 255) : Color.FromArgb(6, 78, 59);
             btnThemeToggle.ForeColor = ThemeColors.CurrentTheme == AppTheme.Light ? Color.FromArgb(37, 99, 235) : Color.FromArgb(52, 211, 153);
 
@@ -230,6 +245,12 @@ namespace OnlineChessGame
                     g.FillEllipse(hoshiBrush, hx - 4, hy - 4, 8, 8);
                 }
 
+            if (boardPanel.Focused)
+            {
+                using var focusPen = new Pen(ThemeColors.Primary, 1f) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash };
+                g.DrawRectangle(focusPen, MARGIN + selectedCell.Column * CELL - 18, MARGIN + selectedCell.Row * CELL - 18, 36, 36);
+            }
+
             // Vẽ các quân cờ đã đánh
             int radius = CELL / 2 - 4;
             for (int r = 0; r < BOARD_SIZE; r++)
@@ -244,18 +265,17 @@ namespace OnlineChessGame
 
                     Color pieceColor = piece == 1 ? ThemeColors.CaroPieceX : ThemeColors.CaroPieceO;
 
-                    using var shadowBrush = new SolidBrush(Color.FromArgb(50, 0, 0, 0));
-                    g.FillEllipse(shadowBrush, px - radius + 2, py - radius + 3, radius * 2, radius * 2);
-
-                    using var brush = new SolidBrush(pieceColor);
-                    g.FillEllipse(brush, px - radius, py - radius, radius * 2, radius * 2);
-
-                    using var hiBrush = new SolidBrush(Color.FromArgb(90, 255, 255, 255));
-                    g.FillEllipse(hiBrush, px - radius / 2, py - radius * 3 / 4, radius, radius / 2);
+                    using var piecePen = new Pen(pieceColor, 3.5f);
+                    if (piece == 1)
+                    {
+                        g.DrawLine(piecePen, px - radius + 3, py - radius + 3, px + radius - 3, py + radius - 3);
+                        g.DrawLine(piecePen, px - radius + 3, py + radius - 3, px + radius - 3, py - radius + 3);
+                    }
+                    else g.DrawEllipse(piecePen, px - radius + 2, py - radius + 2, radius * 2 - 4, radius * 2 - 4);
 
                     if (lastMove.HasValue && lastMove.Value.r == r && lastMove.Value.c == c)
                     {
-                        using var ringPen = new Pen(Color.White, 2.5f);
+                        using var ringPen = new Pen(ThemeColors.TextSecondary, 1f);
                         g.DrawEllipse(ringPen, px - radius - 2, py - radius - 2, (radius + 2) * 2, (radius + 2) * 2);
                     }
                 }
@@ -264,6 +284,7 @@ namespace OnlineChessGame
 
         private void BoardPanel_Click(object? sender, MouseEventArgs e)
         {
+            boardPanel.Focus();
             if (gameOver || !isPlayerTurn) return;
 
             int col = (int)Math.Round((double)(e.X - MARGIN) / CELL);
@@ -272,58 +293,87 @@ namespace OnlineChessGame
             if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) return;
             if (board[row, col] != 0) return;
 
+            selectedCell = (row, col);
             int myPiece = isFirstPlayer ? 1 : 2;
             PlaceMove(row, col, myPiece);
             OnCaroMoveMade?.Invoke(row, col);
 
             if (CheckWin(row, col, myPiece))
             {
-                EndGame($"Chuc mung! {p1Name} da chien thang 5 quan lien tiep!");
+                EndGame($"{p1Name} thắng — 5 quân liên tiếp!");
                 return;
             }
 
+            if (FinishDraw()) return;
             isPlayerTurn = false;
             UpdateTurnBanner();
+            if (isSolo) ScheduleBotMove();
+        }
 
-            if (isSolo)
+        private void ScheduleBotMove()
+        {
+            botDelay?.Dispose();
+            botDelay = new System.Windows.Forms.Timer { Interval = 300 };
+            botDelay.Tick += (_, _) =>
             {
-                var botDelay = new System.Windows.Forms.Timer { Interval = 400 };
-                botDelay.Tick += (s, ev) =>
-                {
-                    botDelay.Stop();
-                    botDelay.Dispose();
-                    if (!gameOver) BotCaroMove();
-                };
-                botDelay.Start();
-            }
+                botDelay.Stop();
+                if (!IsDisposed && !gameOver) BotCaroMove();
+            };
+            botDelay.Start();
         }
 
         private void BotCaroMove()
         {
-            var rng = new Random();
-            var emptyList = new List<(int r, int c)>();
-
-            for (int r = 0; r < BOARD_SIZE; r++)
-                for (int c = 0; c < BOARD_SIZE; c++)
-                    if (board[r, c] == 0) emptyList.Add((r, c));
-
-            if (emptyList.Count == 0)
+            int piece = isFirstPlayer ? 2 : 1;
+            var move = CaroEngine.FindBestMove(board, piece);
+            if (move is null)
             {
-                EndGame("Van co ket thuc: Hoa! Ban co da kin.");
+                EndGame("Hòa — bàn cờ đã kín.");
                 return;
             }
-
-            var (ar, ac) = emptyList[rng.Next(emptyList.Count)];
-            PlaceMove(ar, ac, 2);
-
-            if (CheckWin(ar, ac, 2))
+            var (row, col) = move.Value;
+            PlaceMove(row, col, piece);
+            if (CheckWin(row, col, piece))
             {
-                EndGame($"{p2Name} da chien thang!");
+                EndGame($"{p2Name} thắng!");
                 return;
             }
-
+            if (FinishDraw()) return;
             isPlayerTurn = true;
             UpdateTurnBanner();
+        }
+
+        private bool FinishDraw()
+        {
+            foreach (int piece in board)
+                if (piece == 0) return false;
+            EndGame("Hòa — bàn cờ đã kín.");
+            return true;
+        }
+
+        private void BoardPanel_KeyDown(object? sender, KeyEventArgs e)
+        {
+            var (row, col) = selectedCell;
+            switch (e.KeyCode)
+            {
+                case Keys.Left: col = Math.Max(0, col - 1); break;
+                case Keys.Right: col = Math.Min(BOARD_SIZE - 1, col + 1); break;
+                case Keys.Up: row = Math.Max(0, row - 1); break;
+                case Keys.Down: row = Math.Min(BOARD_SIZE - 1, row + 1); break;
+                case Keys.Enter:
+                case Keys.Space:
+                    BoardPanel_Click(sender, new MouseEventArgs(MouseButtons.Left, 1, MARGIN + col * CELL, MARGIN + row * CELL, 0));
+                    break;
+                default: return;
+            }
+            selectedCell = (row, col);
+            boardPanel.Invalidate();
+            e.SuppressKeyPress = true;
+        }
+
+        private void BoardPanel_PreviewKeyDown(object? sender, PreviewKeyDownEventArgs e)
+        {
+            if (e.KeyCode is Keys.Left or Keys.Right or Keys.Up or Keys.Down) e.IsInputKey = true;
         }
 
         private void PlaceMove(int r, int c, int p)
@@ -333,46 +383,26 @@ namespace OnlineChessGame
             boardPanel.Invalidate();
         }
 
-        private bool CheckWin(int r, int c, int p)
-        {
-            int[][] directions = {
-                new[] { 0, 1 },
-                new[] { 1, 0 },
-                new[] { 1, 1 },
-                new[] { 1, -1 }
-            };
-
-            foreach (var d in directions)
-            {
-                int count = 1;
-                for (int i = 1; i < 5; i++)
-                {
-                    int nr = r + d[0] * i, nc = c + d[1] * i;
-                    if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE && board[nr, nc] == p) count++;
-                    else break;
-                }
-                for (int i = 1; i < 5; i++)
-                {
-                    int nr = r - d[0] * i, nc = c - d[1] * i;
-                    if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE && board[nr, nc] == p) count++;
-                    else break;
-                }
-                if (count >= 5) return true;
-            }
-            return false;
-        }
+        private bool CheckWin(int r, int c, int p) => CaroEngine.HasFive(board, r, c, p);
 
         private void UpdateTurnBanner()
         {
+            if (gameOver)
+            {
+                lblTurn.Text = outcome;
+                lblTurn.BackColor = ThemeColors.PrimaryLight;
+                lblTurn.ForeColor = ThemeColors.Primary;
+                return;
+            }
             if (isPlayerTurn)
             {
-                lblTurn.Text = $"LUOT CUA BAN (QUAN {(isFirstPlayer ? "X" : "O")})";
+                lblTurn.Text = $"Lượt của bạn · {(isFirstPlayer ? "X" : "O")}";
                 lblTurn.BackColor = ThemeColors.PrimaryLight;
                 lblTurn.ForeColor = ThemeColors.Primary;
             }
             else
             {
-                lblTurn.Text = $"LUOT CUA {p2Name.ToUpper()} (QUAN {(isFirstPlayer ? "O" : "X")})";
+                lblTurn.Text = isSolo ? "Máy đang suy nghĩ…" : $"Đợi đối thủ · {(isFirstPlayer ? "O" : "X")}";
                 lblTurn.BackColor = ThemeColors.SurfaceAlt;
                 lblTurn.ForeColor = ThemeColors.TextSecondary;
             }
@@ -382,14 +412,12 @@ namespace OnlineChessGame
         {
             if (gameOver) return;
             gameOver = true;
+            outcome = message;
             gameTimer?.Stop();
-
-            lblTurn.Text = message;
-            lblTurn.BackColor = ThemeColors.Success;
-            lblTurn.ForeColor = Color.White;
-
+            botDelay?.Stop();
+            btnSurr.Enabled = false;
+            UpdateTurnBanner();
             AddChatMessage("He thong", message);
-            MessageBox.Show(message, "Ket thuc van co Caro", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private void SendChat()
@@ -422,7 +450,24 @@ namespace OnlineChessGame
 
         private void BtnDraw_Click(object? sender, EventArgs e)
         {
-            if (isSolo || gameOver) return;
+            if (isSolo)
+            {
+                botDelay?.Stop();
+                board = new int[BOARD_SIZE, BOARD_SIZE];
+                lastMove = null;
+                gameOver = false;
+                outcome = null;
+                isPlayerTurn = isFirstPlayer;
+                p1Time = p2Time = 600;
+                lblTimerPlayer.Text = lblTimerOpp.Text = "10:00";
+                btnSurr.Enabled = true;
+                gameTimer?.Start();
+                UpdateTurnBanner();
+                boardPanel.Invalidate();
+                if (!isFirstPlayer) ScheduleBotMove();
+                return;
+            }
+            if (gameOver) return;
             OnDrawRequest?.Invoke();
             AddChatMessage("He thong", "Ban da gui loi de nghi cau hoa.");
         }
@@ -440,8 +485,11 @@ namespace OnlineChessGame
 
         private async void BtnLeave_Click(object? sender, EventArgs e)
         {
-            await LeaveOnlineGameAsync();
+            btnLeave.Enabled = false;
+            botDelay?.Stop();
             gameTimer?.Stop();
+            await LeaveOnlineGameAsync();
+            if (IsDisposed) return;
             Program.Context.SwitchTo(new DashboardForm(p1Name, p1Elo));
         }
 
@@ -461,7 +509,7 @@ namespace OnlineChessGame
 
         public void ReceiveOpponentMove(int r, int c)
         {
-            if (gameOver || isPlayerTurn) return;
+            if (gameOver || isPlayerTurn || IsDisposed) return;
             if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE || board[r, c] != 0) return;
 
             int opponentPiece = isFirstPlayer ? 2 : 1;
@@ -472,6 +520,7 @@ namespace OnlineChessGame
                 return;
             }
 
+            if (FinishDraw()) return;
             isPlayerTurn = true;
             UpdateTurnBanner();
         }
