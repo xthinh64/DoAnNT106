@@ -88,7 +88,8 @@ class AuthUiContract(unittest.TestCase):
 
     def test_no_password_remembering(self):
         source = (ROOT / 'Design/AuthConnection.cs').read_text(encoding='utf-8-sig')
-        self.assertIn('CHESS_CERT_PIN', source)
+        self.assertIn('GatewayClient', source)
+        self.assertNotIn('CHESS_CERT_PIN', source)
         self.assertNotIn('Password', source)
 
     def test_game_client_has_no_database_credentials_or_direct_mysql_access(self):

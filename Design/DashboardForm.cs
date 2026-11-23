@@ -25,6 +25,7 @@ namespace OnlineChessGame
             queueTimer.Tick += (_, _) => lblQueueTimer.Text = $"Thời gian chờ: {(DateTime.UtcNow - queueStarted):mm\\:ss}";
             GameClient.Instance.OnMatchFound += MatchFound;
             GameClient.Instance.OnDisconnected += GameDisconnected;
+            GameClient.Instance.OnMatchUnavailable += MatchUnavailable;
             Disposed += (_, _) => DetachNetwork();
             ApplyCurrentTheme();
         }
@@ -131,7 +132,7 @@ namespace OnlineChessGame
         {
             _ = CancelMatchAsync();
             GameClient.Instance.Disconnect();
-            AuthConnection.GameToken = null;
+            AuthConnection.SessionToken = null;
             AuthConnection.Player = null;
             OnLogoutRequested?.Invoke();
             Program.Context.SwitchTo(new LoginForm());
@@ -182,8 +183,7 @@ namespace OnlineChessGame
             queueTimer.Start();
             try
             {
-                await GameClient.Instance.ConnectAsync(AuthConnection.GameHost, AuthConnection.GamePort,
-                    AuthConnection.Player?.Username ?? playerName);
+                await GameClient.Instance.ConnectAsync(AuthConnection.Player?.Username ?? playerName);
                 if (queuedMode != gameType) return;
                 await GameClient.Instance.SendAsync(new GamePacket(PacketType.FIND_MATCH, GameMode: gameType,
                     Payload: (gameType == "CARO" ? caroElo : elo).ToString(System.Globalization.CultureInfo.InvariantCulture)));
@@ -193,7 +193,7 @@ namespace OnlineChessGame
             {
                 if (IsDisposed) return;
                 ResetQueue();
-                MessageBox.Show($"Không kết nối được game server {AuthConnection.GamePort}: {ex.Message}",
+                MessageBox.Show($"Không kết nối được gateway {AuthConnection.Endpoint}: {ex.Message}",
                     "Lỗi tìm trận", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -258,6 +258,17 @@ namespace OnlineChessGame
             });
         }
 
+        private void MatchUnavailable(string message)
+        {
+            if (!IsHandleCreated || IsDisposed) return;
+            BeginInvoke(() =>
+            {
+                if (IsDisposed || queuedMode is null) return;
+                ResetQueue();
+                MessageBox.Show(message, "Chưa tìm được trận", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            });
+        }
+
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             DetachNetwork();
@@ -268,6 +279,7 @@ namespace OnlineChessGame
         {
             GameClient.Instance.OnMatchFound -= MatchFound;
             GameClient.Instance.OnDisconnected -= GameDisconnected;
+            GameClient.Instance.OnMatchUnavailable -= MatchUnavailable;
             queueTimer.Dispose();
         }
     }

@@ -29,7 +29,9 @@ namespace OnlineChessGame
         private bool onlineDetached;
         private bool botThinking;
         private bool engineWarningShown;
-        private readonly ChessGameState chessState = new();
+        private ChessGameState chessState = new();
+        private MatchState? onlineState;
+        private long clockSampleAt;
         private ChessDifficulty difficulty = ChessDifficulty.Medium;
         private StockfishClient? stockfish;
         private bool useLocalEngine;
@@ -107,6 +109,8 @@ namespace OnlineChessGame
             AddChatMessage("He thong", "Tran dau Co Vua da bat dau. Chuc 2 ky thu thi dau tot!");
             if (isSolo)
                 await EnsureStockfishReadyAsync(showError: true);
+            else if (GameClient.Instance.CurrentMatchState is { } state)
+                ApplyOnlineState(state, "");
         }
 
         private static void EnableDoubleBuffering(Control c)
@@ -349,7 +353,7 @@ namespace OnlineChessGame
 
         private void BoardPanel_Click(object? sender, MouseEventArgs e)
         {
-            if (gameOver || botThinking) return;
+            if (gameOver || botThinking || !isSolo && (onlineState is null || GameClient.Instance.IsRecovering)) return;
             if (isSolo ? !isWhiteTurn : isWhiteTurn != isFirstPlayer) return;
 
             int col = (e.X - MARGIN) / CELL;
@@ -407,8 +411,9 @@ namespace OnlineChessGame
                 uciMove = candidates.FirstOrDefault(move => move.Length == 5 && move[4] == dialog.SelectedPiece);
             }
 
-            if (uciMove is not null)
-                ApplyUciMove(uciMove, notifyNetwork: true);
+            if (uciMove is null) return;
+            if (isSolo) ApplyUciMove(uciMove, notifyNetwork: true);
+            else _ = SendOnlineAsync(PacketType.MOVE, uciMove);
         }
 
         private async Task BotChessMoveAsync()
@@ -700,7 +705,7 @@ namespace OnlineChessGame
             {
                 
                 OnSurrender?.Invoke();
-                EndGame("Bạn đã đầu hàng! Đối thủ chiến thắng.");
+                if (isSolo) EndGame("Bạn đã đầu hàng! Đối thủ chiến thắng.");
             }
         }
 
@@ -757,11 +762,17 @@ namespace OnlineChessGame
             GameClient.Instance.OnDrawResponseReceived += OnlineDrawResponseReceived;
             GameClient.Instance.OnOpponentLeft += OnlineOpponentLeft;
             GameClient.Instance.OnDisconnected += OnlineDisconnected;
+            GameClient.Instance.OnMatchState += OnlineStateReceived;
+            GameClient.Instance.OnRecovering += OnlineRecovering;
+            gameTimer = new System.Windows.Forms.Timer { Interval = 250 };
+            gameTimer.Tick += (_, _) => UpdateOnlineClocks();
+            gameTimer.Start();
         }
 
         private async Task SendOnlineAsync(PacketType type, string payload = "")
         {
-            try { await GameClient.Instance.SendAsync(new GamePacket(type, GameMode: "CHESS", Payload: payload)); }
+            try { await GameClient.Instance.SendAsync(new GamePacket(type, GameMode: "CHESS", Payload: payload,
+                ExpectedRevision: onlineState?.Revision)); }
             catch (IOException) { RunOnUi(() => AddChatMessage("He thong", "Mất kết nối game server.")); }
         }
 
@@ -772,6 +783,45 @@ namespace OnlineChessGame
         }
 
         private void OnlineMoveReceived(string move) => RunOnUi(() => ReceiveOpponentMove(move));
+        private void OnlineStateReceived(MatchState state, string message) => RunOnUi(() => ApplyOnlineState(state, message));
+        private void OnlineRecovering() => RunOnUi(() => lblTurn.Text = "Đang chuyển worker…");
+
+        private void ApplyOnlineState(MatchState state, string message)
+        {
+            if (onlineState is { } old && (state.Generation < old.Generation || state.Revision < old.Revision)) return;
+            if (onlineState?.Moves != state.Moves)
+            {
+                var restored = new ChessGameState();
+                foreach (var move in state.Moves.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (!restored.TryApplyMove(move, out _)) { EndGame("Không thể đồng bộ bàn cờ."); return; }
+                    lastMoveFrom = ChessGameState.SquareToCoordinates(move.AsSpan(0, 2));
+                    lastMoveTo = ChessGameState.SquareToCoordinates(move.AsSpan(2, 2));
+                }
+                chessState = restored;
+                selectedSquare = null;
+                selectedLegalMoves = Array.Empty<string>();
+                validMoves.Clear();
+                SyncBoardFromFen();
+                boardPanel.Invalidate();
+            }
+            onlineState = state;
+            clockSampleAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            UpdateOnlineClocks();
+            if (message.Length > 0) AddChatMessage("Hệ thống", message);
+            if (state.Result is { } result)
+                EndGame($"{(result == "DRAW" ? "Hòa" : result == "ABORTED" ? "Trận đã hủy" : result == (isFirstPlayer ? "FIRST" : "SECOND") ? "Bạn thắng" : "Bạn thua")} · {state.Reason}");
+            else if (GameClient.Instance.IsRecovering) lblTurn.Text = "Đang chuyển worker…";
+            else UpdateTurnBanner();
+        }
+
+        private void UpdateOnlineClocks()
+        {
+            if (onlineState is not { } state) return;
+            long now = state.ObservedAt + (long)System.Diagnostics.Stopwatch.GetElapsedTime(clockSampleAt).TotalMilliseconds;
+            lblTimerPlayer.Text = TimeSpan.FromSeconds((state.Remaining(isFirstPlayer ? 1 : 2, now) + 999) / 1000).ToString(@"mm\:ss");
+            lblTimerOpp.Text = TimeSpan.FromSeconds((state.Remaining(isFirstPlayer ? 2 : 1, now) + 999) / 1000).ToString(@"mm\:ss");
+        }
         private void OnlineChatReceived(string sender, string message) => RunOnUi(() => AddChatMessage(sender, message));
         private void OnlineSurrenderReceived(string _) => RunOnUi(() => EndGame($"{p2Name} đã đầu hàng. Bạn chiến thắng!"));
         private void OnlineDrawRequestReceived(string requester) => RunOnUi(() =>
@@ -779,7 +829,6 @@ namespace OnlineChessGame
             bool accept = MessageBox.Show($"{p2Name} đề nghị hòa. Bạn đồng ý?", "Đề nghị hòa",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
             _ = SendOnlineAsync(PacketType.DRAW_RESPONSE, accept ? "ACCEPT" : "DECLINE");
-            if (accept) EndGame("Hai bên đã đồng ý hòa.");
         });
         private void OnlineDrawResponseReceived(bool accept) => RunOnUi(() =>
         {
@@ -800,6 +849,8 @@ namespace OnlineChessGame
             GameClient.Instance.OnDrawResponseReceived -= OnlineDrawResponseReceived;
             GameClient.Instance.OnOpponentLeft -= OnlineOpponentLeft;
             GameClient.Instance.OnDisconnected -= OnlineDisconnected;
+            GameClient.Instance.OnMatchState -= OnlineStateReceived;
+            GameClient.Instance.OnRecovering -= OnlineRecovering;
             if (!string.IsNullOrEmpty(GameClient.Instance.CurrentRoomId))
             {
                 try { await SendOnlineAsync(PacketType.LEAVE_ROOM).WaitAsync(TimeSpan.FromSeconds(3)); }

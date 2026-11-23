@@ -1,0 +1,14 @@
+USE onlinechessdb;
+
+CREATE TABLE IF NOT EXISTS OnlineMatches (
+    room_id CHAR(32) CHARACTER SET ascii PRIMARY KEY,
+    game_type ENUM('CHESS', 'CARO') NOT NULL,
+    first_user_id INT NOT NULL,
+    second_user_id INT NOT NULL,
+    generation BIGINT NOT NULL,
+    revision BIGINT NOT NULL,
+    snapshot LONGTEXT NOT NULL,
+    result ENUM('FIRST', 'SECOND', 'DRAW', 'ABORTED') NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;

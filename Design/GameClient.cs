@@ -1,6 +1,4 @@
 using System.Net.Security;
-using System.Security.Authentication;
-using System.Security.Cryptography;
 using System.Net.Sockets;
 using OnlineChessGame.Network;
 
@@ -16,6 +14,9 @@ public sealed class GameClient
 
     public string CurrentUsername { get; private set; } = string.Empty;
     public string CurrentRoomId { get; set; } = string.Empty;
+    public MatchState? CurrentMatchState { get; private set; }
+    public bool IsRecovering { get; private set; }
+    public int MatchSide { get; private set; }
 
     public event Action<string, string, int, bool, string>? OnMatchFound; // roomId, opponent, elo, first, mode
     public event Action<string>? OnMoveReceived;
@@ -25,42 +26,41 @@ public sealed class GameClient
     public event Action<bool>? OnDrawResponseReceived;
     public event Action<string>? OnOpponentLeft;
     public event Action? OnDisconnected;
+    public event Action<string>? OnMatchUnavailable;
+    public event Action<MatchState, string>? OnMatchState;
+    public event Action? OnRecovering;
 
-    public async Task ConnectAsync(string host, int port, string username)
+    public async Task ConnectAsync(string username)
     {
         CurrentUsername = string.IsNullOrWhiteSpace(username) ? "Player" : username;
         if (_tcp is { Connected: true } && _stream is not null) return;
 
         Disconnect();
-        _tcp = new TcpClient();
+        var tcp = new TcpClient();
+        _tcp = tcp;
+        SslStream? tls = null;
         try
         {
-            await _tcp.ConnectAsync(host, port).WaitAsync(TimeSpan.FromSeconds(5));
-            byte[] pin = Convert.FromHexString(AuthConnection.CertificatePin);
-            if (pin.Length != 32) throw new InvalidOperationException("Certificate pin không hợp lệ.");
-            _stream = new SslStream(_tcp.GetStream(), false, (_, cert, _, _) => cert is not null &&
-                CryptographicOperations.FixedTimeEquals(SHA256.HashData(cert.GetRawCertData()), pin));
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            await _stream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
-            {
-                TargetHost = host, EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
-            }, deadline.Token);
-            string token = AuthConnection.GameToken ?? throw new InvalidOperationException("Vui lòng đăng nhập lại để mở phiên game.");
-            await GameWire.WriteAsync(_stream, new GamePacket(PacketType.AUTHENTICATE, Payload: token), deadline.Token);
-            var reply = await GameWire.ReadAsync<GamePacket>(_stream, deadline.Token);
-            AuthConnection.GameToken = null;
+            var gateway = AuthConnection.CreateClient();
+            string session = AuthConnection.SessionToken ?? throw new InvalidOperationException("Vui lòng đăng nhập lại để mở phiên game.");
+            var ticket = await gateway.RequestTicketAsync(session, deadline.Token);
+            if (ticket.Token is null) throw new InvalidOperationException("Phiên game hết hạn. Vui lòng đăng nhập lại.");
+            tls = await gateway.ConnectAsync(tcp, deadline.Token);
+            await GameWire.WriteAsync(tls, new GatewayRequest(GatewayRequest.CurrentVersion, "game", Token: ticket.Token), deadline.Token);
+            var reply = await GameWire.ReadAsync<GamePacket>(tls, deadline.Token);
             if (reply?.Type != PacketType.AUTHENTICATED)
                 throw new InvalidOperationException("Phiên game hết hạn. Vui lòng đăng nhập lại.");
+            if (!ReferenceEquals(tcp, _tcp)) throw new OperationCanceledException();
+            _stream = tls;
+            _ = Task.Run(() => ListenLoopAsync(tcp, tls));
         }
         catch
         {
-            Disconnect();
+            tls?.Dispose();
+            if (ReferenceEquals(tcp, _tcp)) Disconnect();
             throw;
         }
-
-        var tcp = _tcp;
-        var stream = _stream;
-        _ = Task.Run(() => ListenLoopAsync(tcp, stream));
     }
 
     private async Task ListenLoopAsync(TcpClient tcp, SslStream stream)
@@ -74,15 +74,40 @@ public sealed class GameClient
 
                 switch (packet.Type)
                 {
+                    case PacketType.ERROR:
+                        if (string.IsNullOrEmpty(CurrentRoomId))
+                        {
+                            OnMatchUnavailable?.Invoke(packet.Payload);
+                            break;
+                        }
+                        return;
                     case PacketType.MATCH_FOUND:
                         {
                             CurrentRoomId = packet.RoomId;
                             var parts = packet.Payload.Split('|');
                             bool isFirst = parts.Length > 0 && parts[0] == "FIRST";
+                            MatchSide = isFirst ? 1 : 2;
+                            CurrentMatchState = packet.State;
+                            IsRecovering = false;
                             int oppElo = parts.Length > 1 && int.TryParse(parts[1], out int e) ? e : 1200;
                             OnMatchFound?.Invoke(packet.RoomId, packet.Sender, oppElo, isFirst, packet.GameMode);
                             break;
                         }
+                    case PacketType.RECOVERING when packet.RoomId == CurrentRoomId:
+                        IsRecovering = true;
+                        OnRecovering?.Invoke();
+                        break;
+                    case PacketType.STATE when packet.RoomId == CurrentRoomId && packet.State is { } state:
+                    {
+                        var previous = CurrentMatchState;
+                        if (previous is not null && (state.Generation < previous.Generation || state.Revision < previous.Revision)) break;
+                        CurrentMatchState = state;
+                        IsRecovering = false;
+                        OnMatchState?.Invoke(state, packet.Payload);
+                        if (state.DrawOfferedBy != 0 && state.DrawOfferedBy != MatchSide && state.DrawOfferedBy != previous?.DrawOfferedBy)
+                            OnDrawRequestReceived?.Invoke("");
+                        break;
+                    }
                     case PacketType.MOVE:
                         OnMoveReceived?.Invoke(packet.Payload);
                         break;
@@ -99,13 +124,16 @@ public sealed class GameClient
                         OnDrawResponseReceived?.Invoke(packet.Payload == "ACCEPT");
                         break;
                     case PacketType.OPPONENT_LEFT:
+                        if (packet.RoomId != CurrentRoomId) break;
                         CurrentRoomId = string.Empty;
+                        CurrentMatchState = null;
+                        IsRecovering = false;
                         OnOpponentLeft?.Invoke(packet.Payload);
                         break;
                 }
             }
         }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException or System.Text.Json.JsonException) { }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or ObjectDisposedException or System.Text.Json.JsonException) { }
         finally
         {
             if (ReferenceEquals(_tcp, tcp))
@@ -125,6 +153,8 @@ public sealed class GameClient
         stream?.Dispose();
         tcp?.Dispose();
         CurrentRoomId = string.Empty;
+        CurrentMatchState = null;
+        IsRecovering = false;
     }
 
     public async Task SendAsync(GamePacket packet)

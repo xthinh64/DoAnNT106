@@ -1,353 +1,168 @@
-# Thiết lập MySQL và chạy ứng dụng qua LAN
+# Chạy Chess & Caro qua LAN với Gateway v3
 
-Hướng dẫn theo mã nguồn hiện tại, dùng **Windows PowerShell** cho các lệnh ứng dụng và mạng; SQL chạy trong **MySQL Workbench**. Máy A chạy MySQL và ServerManager, máy B/C chạy client.
+Máy A chạy MySQL và ServerManager. Máy B/C chạy client Windows cùng phiên bản với server. Client dùng **một cổng TCP/TLS `8888`** để đăng ký, đăng nhập, tìm trận, gửi nước đi và chat.
 
-**Phạm vi chạy được:** đăng ký/đăng nhập qua mạng, chơi Solo, tìm trận cờ vua/caro giữa hai client LAN, gửi nước đi và chat. Kênh game dùng TLS và token cấp sau đăng nhập; chưa lưu kết quả/Elo.
+| Thành phần | Địa chỉ ví dụ | Máy B/C có kết nối trực tiếp? |
+| --- | --- | --- |
+| Gateway trên máy A | `192.168.1.10:8888` | Có |
+| Hai game worker trên máy A | `127.0.0.1:9001`, `127.0.0.1:9002` | Không |
+| MySQL trên máy A | `127.0.0.1:3306` | Không |
 
-## Trước khi làm: database, tài khoản và PFX là gì?
+Trong toàn bộ hướng dẫn, thay `192.168.1.10` bằng IPv4 thực tế của máy A. Dùng **Windows PowerShell** cho các lệnh Windows và `dotnet`. Đường dẫn `Q:\DoAnNT106` chỉ là ví dụ.
 
-Không cần tạo tài khoản trên website MariaDB/MySQL. Bạn cài MySQL Server trên máy A, dùng Workbench kết nối vào đó rồi chạy file SQL để tạo database ngay trên máy A. Chỉ cài Workbench thì chưa có MySQL Server; SSMS cũng không thay thế Workbench cho mã nguồn MySQL hiện tại.
+## 1. Máy A chuẩn bị MySQL
 
-| Thông tin | Tạo ở đâu? | Dùng ở đâu? |
-|---|---|---|
-| Mật khẩu quản trị `root` | Khi cấu hình MySQL Server | Workbench để tạo schema và cấp quyền |
-| Tài khoản DB `chess_auth` và mật khẩu | Chạy SQL trong Workbench | Ô chuỗi kết nối MySQL của ServerManager |
-| Tài khoản người chơi | Màn hình Đăng ký của game | Màn hình Đăng nhập của game |
-| Tệp PFX và mật khẩu PFX | Nhập mật khẩu rồi bấm Tạo PFX mới… trong ServerManager | Server mở chứng chỉ/khóa riêng để phục vụ TLS |
-| Certificate pin | ServerManager tự tính từ chứng chỉ, dài 64 ký tự hex | Biến CHESS_CERT_PIN trên client |
+Nếu ServerManager đã báo **MySQL: schema auth và trận sẵn sàng** và tài khoản server đã có quyền ghi `OnlineMatches`, có thể chuyển sang bước 2.
 
-PFX không lấy từ database hoặc website. Client chỉ nhận pin; PFX và mật khẩu PFX giữ trên server. Những lần chạy sau dùng lại PFX đã tạo và đúng mật khẩu. SQL Server cần chuyển đổi mã nguồn, không dùng được bằng cách chỉ đổi chuỗi kết nối.
-
-Nếu mới làm lần đầu, nên theo [README: thử cùng máy trước rồi chuyển LAN](../README.md#bắt-đầu-từ-đâu). Hướng dẫn bên dưới là quy trình trực tiếp cho cấu hình LAN.
-
-## 1. Sơ đồ và địa chỉ mẫu
-
-```text
-Máy B/C: client ── TCP/TLS → Máy A: ServerManager :8888 → MySQL cục bộ :3306
-              └── TCP game → Máy A: GameServer :9000
-Máy A: worker auth chỉ trên loopback :9001 và :9002
-```
-
-| Máy | Vai trò | IP ví dụ |
-|---|---|---|
-| A | MySQL + ServerManager | 192.168.1.10 |
-| B | Client người chơi thứ nhất | 192.168.1.11 |
-| C | Client người chơi thứ hai | 192.168.1.12 |
-
-Thay `192.168.1.10` bằng IP thật máy A trong tất cả ví dụ. Hai máy đã đủ thử đăng ký/đăng nhập qua LAN. Các máy phải kết nối được với nhau, ví dụ cùng Wi-Fi hoặc router; Wi-Fi khách có thể chặn liên lạc giữa thiết bị.
-
-## 2. Chọn đúng terminal
-
-Mở **Windows PowerShell**, chuyển đến thư mục mã nguồn:
-
-```powershell
-Set-Location Q:\DoAnNT106
-dotnet --info
-```
-
-Đường dẫn `Q:\DoAnNT106` là của máy đang phát triển; máy khác dùng đường dẫn repository trên máy đó. Cần .NET SDK hỗ trợ target .NET 8 Windows khi chạy từ source.
-
-Nếu dùng WSL, lệnh `dotnet` có thể gọi bản Linux và báo `[/usr/lib/dotnet/host/fxr] does not exist`. WinForms phải dùng SDK Windows:
-
-```bash
-"/mnt/c/Program Files/dotnet/dotnet.exe" run --project ServerManager/OnlineChessGame.ServerManager.csproj
-```
-
-Các đoạn `$env:...`, `Test-NetConnection`, `New-NetFirewallRule` bên dưới phải chạy bằng **Windows PowerShell**, không dán trực tiếp vào Bash/WSL.
-
-## 3. Cài MySQL trên máy A
-
-Nếu đã có MySQL hoạt động, dùng instance đó và chuyển sang bước 4. Nếu chưa có:
-
-1. Cài **MySQL Community Server cho Windows** từ https://dev.mysql.com/downloads/mysql/.
-2. Cài **MySQL Workbench** từ https://dev.mysql.com/downloads/workbench/ để chạy SQL bằng giao diện.
-3. Trong bước cấu hình server, bật TCP/IP, chọn cổng `3306` nếu cổng còn trống, đặt mật khẩu quản trị `root` và ghi nhớ.
-4. Cấu hình MySQL chạy dưới dạng Windows Service, khởi động dịch vụ. Tên dịch vụ tùy bản cài; không mặc định mọi máy đều có tên `MySQL80`.
-5. Hướng dẫn này đặt MySQL cùng máy với server ứng dụng; không cần mở cổng MySQL ra LAN.
-
-Kiểm tra dịch vụ và cổng trong PowerShell:
-
-```powershell
-Get-Service | Where-Object { $_.Name -match 'mysql|maria' }
-Test-NetConnection 127.0.0.1 -Port 3306
-```
-
-Cần thấy dịch vụ `Running` và `TcpTestSucceeded : True`. Nếu MySQL dùng cổng khác, dùng cổng đó ở Workbench và chuỗi kết nối; cổng ứng dụng `8888` không thay đổi theo cổng DB.
-
-Trong Workbench, tạo kết nối quản trị:
-
-- Connection Method: **Standard (TCP/IP)**.
-- Hostname: `127.0.0.1`.
-- Port: `3306` hoặc cổng thực tế.
-- Username: `root`.
-- Password: mật khẩu đã đặt lúc cài MySQL.
-
-Chọn **Test Connection**, sau đó mở kết nối.
-
-## 4. Tạo schema từ repository
-
-Với cơ sở dữ liệu mới, trong Workbench chọn **File → Open SQL Script**, mở:
-
-```text
-Q:\DoAnNT106\onlinedb\game_auth.sql
-```
-
-Chạy **toàn bộ script**, không chỉ dòng đang đặt con trỏ. Script tạo schema `onlinechessdb` và tám bảng. Không cần dùng màn hình Data Import cho tệp này. Nếu đã có dữ liệu sử dụng, sao lưu và kiểm tra trước; `CREATE TABLE IF NOT EXISTS` không tự nâng cấp cấu trúc bảng cũ.
-
-Chạy các câu SQL sau để kiểm tra:
+1. Cài và khởi động **MySQL Server** trên máy A. MySQL Workbench là giao diện thực thi SQL.
+2. Trong Workbench, kết nối bằng tài khoản quản trị. Với database mới, chạy [onlinedb/game_auth.sql](../onlinedb/game_auth.sql) trước. Sau đó chạy [onlinedb/online_matches.sql](../onlinedb/online_matches.sql) để tạo bảng lưu trận. Với database đang dùng, chỉ cần chạy migration mới.
+3. Tạo tài khoản ứng dụng và cấp quyền. Thay mật khẩu mẫu trước khi chạy. Nếu tài khoản đã tồn tại, bỏ qua `CREATE USER` và cấp thêm quyền cho bảng mới.
 
 ```sql
-USE onlinechessdb;
-SHOW TABLES;
-SHOW COLUMNS FROM Users;
-SHOW COLUMNS FROM UserGameStats;
-```
-
-Tám bảng mong đợi:
-
-```text
-Users
-UserGameStats
-Rooms
-RoomMembers
-Matches
-MatchPlayers
-RoomMessages
-MatchmakingQueue
-```
-
-Không cần chèn tài khoản người chơi bằng SQL. Ứng dụng sẽ tạo tài khoản và băm mật khẩu khi đăng ký.
-
-## 5. Tạo tài khoản MySQL cho server
-
-Tài khoản DB này khác tài khoản người chơi. Chạy bằng kết nối quản trị Workbench, thay mật khẩu mẫu trước khi thực hiện:
-
-```sql
-CREATE USER 'chess_auth'@'127.0.0.1'
-IDENTIFIED BY 'THAY_BANG_MAT_KHAU_DB_CUA_BAN';
+CREATE USER 'chess_auth'@'127.0.0.1' IDENTIFIED BY 'THAY_BANG_MAT_KHAU_DB';
 
 GRANT SELECT, INSERT ON onlinechessdb.Users
 TO 'chess_auth'@'127.0.0.1';
 
 GRANT SELECT, INSERT ON onlinechessdb.UserGameStats
 TO 'chess_auth'@'127.0.0.1';
+
+GRANT SELECT, INSERT, UPDATE ON onlinechessdb.OnlineMatches
+TO 'chess_auth'@'127.0.0.1';
 ```
 
-Quyền trên phục vụ đăng ký, đăng nhập và kiểm tra schema của UI, với migration mật khẩu cũ tắt. Nếu user đã tồn tại, kiểm tra lại thay vì chạy `CREATE USER` lần nữa. Không cần quyền tạo/xóa database hoặc cấp toàn quyền để chạy auth.
+Quyền trên dành cho cấu hình mặc định với **Cho phép chuyển mật khẩu cũ** bỏ chọn. Có thể dùng Workbench để thử kết nối bằng chính tài khoản ứng dụng qua `127.0.0.1`. Giữ thông tin kết nối MySQL trên máy A.
 
-Nếu MySQL báo `Access denied`, kiểm tra đúng mật khẩu/quyền trước; thông báo có host `localhost` chưa tự chứng minh nguyên nhân là host. Khi đã xác định cần tài khoản cục bộ `chess_auth`@`localhost` và tài khoản đó chưa tồn tại, tạo với cùng mật khẩu DB và quyền:
+## 2. Máy A lấy IP LAN và mở cổng Gateway
 
-```sql
-CREATE USER 'chess_auth'@'localhost'
-IDENTIFIED BY 'THAY_BANG_MAT_KHAU_DB_CUA_BAN';
-
-GRANT SELECT, INSERT ON onlinechessdb.Users
-TO 'chess_auth'@'localhost';
-
-GRANT SELECT, INSERT ON onlinechessdb.UserGameStats
-TO 'chess_auth'@'localhost';
-```
-
-Có thể tạo thêm kết nối Workbench bằng `chess_auth`, host `127.0.0.1`, để xác nhận tài khoản DB đăng nhập được trước khi cấu hình ứng dụng.
-
-## 6. Lấy IP LAN và chuẩn bị firewall máy A
-
-Trong Windows PowerShell máy A:
+Cho A, B và C vào cùng mạng nội bộ. Trên máy A, chạy:
 
 ```powershell
 ipconfig
+Get-NetConnectionProfile
 ```
 
-Lấy **IPv4 Address** của card Wi-Fi/Ethernet đang dùng chung với máy B/C. Không lấy IP WSL, Docker, VPN hoặc `127.0.0.1`. Ví dụ IPv4 thực tế là `192.168.1.10`.
-
-Trên mạng nội bộ tin cậy, đặt Windows Network profile thành **Private** trong Settings của kết nối đang dùng. Sau đó mở **PowerShell bằng Run as administrator** và thêm quy tắc cho auth và game:
+Lấy IPv4 của card Wi-Fi hoặc Ethernet đang dùng. Trên mạng nội bộ tin cậy, đặt profile mạng Windows thành **Private**. Mở **PowerShell bằng quyền Administrator** và thêm quy tắc sau một lần:
 
 ```powershell
-New-NetFirewallRule `
-  -DisplayName "OnlineChess Auth TCP 8888 LAN" `
-  -Direction Inbound `
-  -Action Allow `
-  -Protocol TCP `
-  -LocalPort 8888 `
-  -Profile Private `
-  -RemoteAddress LocalSubnet
-
-New-NetFirewallRule `
-  -DisplayName "OnlineChess Game TLS 9000 LAN" `
-  -Direction Inbound `
-  -Action Allow `
-  -Protocol TCP `
-  -LocalPort 9000 `
-  -Profile Private `
-  -RemoteAddress LocalSubnet
+New-NetFirewallRule -DisplayName 'OnlineChess Gateway TCP 8888 LAN' `
+  -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8888 `
+  -Profile Private -RemoteAddress LocalSubnet
 ```
 
-Chỉ chạy lệnh thêm rule một lần. Nếu đổi cổng gateway/game trên UI, tạo quy tắc đúng cổng mới. Client cần cổng 8888 và 9000; không mở 9001, 9002 hoặc 3306 cho máy chơi.
+Nếu đổi cổng Gateway, sửa cổng trong firewall, địa chỉ client và lệnh kiểm tra TCP tương ứng.
 
-## 7. Khởi động ServerManager trên máy A
+## 3. Máy A chạy ServerManager và xuất chứng chỉ LAN
 
-Trong PowerShell thường tại repository:
-
-```powershell
-dotnet run --project ServerManager/OnlineChessGame.ServerManager.csproj
-```
-
-Mở tab **Cấu hình**, nhập:
-
-| Trường | Giá trị ví dụ |
-|---|---|
-| IP gateway | `192.168.1.10` — thay bằng IPv4 thật máy A |
-| Gateway | `8888` |
-| Game | `9000` |
-| Worker 1 | `9001` |
-| Worker 2 | `9002` |
-| Mật khẩu PFX | Tự đặt, khác mật khẩu DB |
-| Chuỗi kết nối MySQL | Theo mẫu bên dưới |
-| Cho phép chuyển mật khẩu cũ | Bỏ chọn |
-
-Chuỗi kết nối mẫu:
-
-```text
-Server=127.0.0.1;Port=3306;Database=onlinechessdb;User ID=chess_auth;Password=THAY_BANG_MAT_KHAU_DB_CUA_BAN;SslMode=None;
-```
-
-`SslMode=None` ở ví dụ này chỉ áp dụng kết nối MySQL cục bộ cùng máy qua loopback. Kết nối client–server ứng dụng vẫn dùng TLS và pin chứng chỉ. Nếu DB nằm máy khác, cần cấu hình TLS MySQL riêng thay vì áp dụng mẫu này nguyên dạng.
-
-Thực hiện lần lượt:
-
-1. Nhập mật khẩu PFX, chọn **Tạo PFX mới…**.
-2. Chọn một tệp chưa tồn tại, ví dụ trong `%LOCALAPPDATA%\ChessServer\server.pfx` sau khi tạo thư mục; giữ PFX trên máy A.
-3. Nếu đã tạo PFX trước đây, chọn **Chọn PFX…** và nhập đúng mật khẩu; không tạo lại mỗi lần chạy.
-4. Chọn **Kiểm tra MySQL**. Cần thấy `MySQL: schema auth sẵn sàng`.
-5. Chọn **Khởi động**. Cần thấy `ĐANG CHẠY`, endpoint gateway và game đúng IP LAN trong tab Vận hành.
-6. Quay lại tab Cấu hình, chọn **Sao chép pin**. Pin là chuỗi 64 ký tự hex để cấp cho client qua kênh tin cậy.
-
-Hai worker vẫn chỉ mở loopback. Không chạy đồng thời server console và ServerManager trên cùng bốn cổng. Giữ cửa sổ server mở trong lúc thử nghiệm.
-
-Nếu máy A đổi IP khi chuyển Wi-Fi hoặc nhận DHCP mới, dừng server rồi cập nhật IP bind và endpoint của client. Việc đổi IP không yêu cầu tạo lại PFX. Việc đổi PFX làm thay đổi pin và cần cập nhật client.
-
-## 8. Thử client ngay trên máy A
-
-Mở **PowerShell khác** trên máy A. Dùng cùng IP LAN đã bind; nếu server chỉ bind IP LAN thì không thay bằng loopback khi thử:
+Từ thư mục repo trên máy A:
 
 ```powershell
 Set-Location Q:\DoAnNT106
-$env:CHESS_AUTH_ENDPOINT = '192.168.1.10:8888'
-$env:CHESS_CERT_PIN = Read-Host 'Dan pin SHA-256 tu ServerManager'
-
-dotnet run --project Design/OnlineChessGame.csproj
+dotnet run --project .\ServerManager\OnlineChessGame.ServerManager.csproj -c Release
 ```
 
-Khi được hỏi pin, dán đúng 64 ký tự, không thêm nhãn `CHESS_CERT_PIN=`. Trên màn hình đăng nhập, kiểm tra ô địa chỉ server vẫn là `192.168.1.10:8888`.
+Trong tab **Cấu hình**, nhập:
 
-Chọn Đăng ký, nhập tên đăng nhập mới, tên hiển thị và mật khẩu 8–128 ký tự; xác nhận mật khẩu giống nhau. Sau khi đăng ký thành công, đăng nhập bằng chính tài khoản đó. Cần vào được sảnh và thấy nhật ký đăng ký/đăng nhập trên server.
+| Trường | Giá trị |
+| --- | --- |
+| IP gateway | IPv4 LAN máy A, ví dụ `192.168.1.10` |
+| Gateway / Worker 1 / Worker 2 | `8888` / `9001` / `9002` |
+| Số phòng tối đa / worker | Mặc định `32` |
+| Chuỗi kết nối MySQL | Theo mẫu bên dưới |
+| Cho phép chuyển mật khẩu cũ | Bỏ chọn |
 
-Biến `$env:` chỉ có hiệu lực trong cửa sổ PowerShell hiện tại và tiến trình con được mở từ đó. Nếu chạy client từ cửa sổ khác hoặc mở EXE bằng double-click, biến vừa đặt có thể không được kế thừa; mở lại client từ PowerShell đã cấu hình.
+```text
+Server=127.0.0.1;Port=3306;Database=onlinechessdb;User ID=chess_auth;Password=THAY_BANG_MAT_KHAU_DB;SslMode=None;
+```
 
-## 9. Chạy client từ máy B/C
+`SslMode=None` trong mẫu dành cho MySQL cục bộ trên loopback. Kết nối client–Gateway vẫn dùng TLS.
 
-Các máy client dùng cùng phiên bản source và SDK Windows phù hợp nếu chạy bằng `dotnet run`. Không cần cài MySQL hoặc mang tài khoản DB/PFX sang máy client để thực hiện auth.
+1. **Đặt IP gateway trước khi tạo PFX.** Nhập mật khẩu PFX, bấm **Tạo PFX mới…**, lưu vào một tên chưa tồn tại, ví dụ `C:\ChessServer\chess-lan.pfx`. ServerManager thêm IP đã nhập vào SAN của chứng chỉ. Có thể dùng lại PFX tự ký nếu SAN đã chứa đúng địa chỉ client sẽ dùng.
+2. Bấm **Kiểm tra MySQL**. Khi schema sẵn sàng, bấm **Khởi động**. Trong tab **Vận hành**, xác nhận Gateway hiển thị IP LAN và cổng `8888`, hai worker hiển thị `127.0.0.1:9001` và `127.0.0.1:9002`.
+3. Quay lại **Cấu hình → Xuất .cer LAN…** và lưu `chess-lan.cer`. Khi đang chạy, nút xuất chứng chỉ công khai từ PFX Gateway đang dùng. Chuyển file `.cer` cho B/C qua kênh tin cậy. Giữ PFX và mật khẩu PFX trên máy A.
 
-Đầu tiên, mở PowerShell máy B/C và thử cổng:
+Nếu nút báo PFX thiếu SAN, tạo PFX mới bằng ServerManager hiện tại rồi xuất lại. Với PFX do CA nội bộ cấp, dùng file `.cer` công khai của **CA gốc** do quản trị viên cung cấp. Tên DNS hoặc IP client dùng phải khớp SAN.
+
+## 4. Chuẩn bị client cho máy B/C
+
+Trên máy có source và .NET SDK Windows, publish client **cùng bản mã nguồn với server**. Bản Windows x64 tự chứa runtime nên B/C có thể chạy trực tiếp:
+
+```powershell
+dotnet publish .\Design\OnlineChessGame.csproj -c Release -r win-x64 --self-contained true -o .\publish\Client-LAN
+```
+
+Đặt `chess-lan.cer` và `client-config.json` **cạnh `OnlineChessGame.exe`** trong thư mục `publish\Client-LAN`. Nội dung `client-config.json`:
+
+```json
+{
+  "endpoint": "192.168.1.10:8888",
+  "trustedRootCertificate": "chess-lan.cer"
+}
+```
+
+Sao chép **toàn bộ thư mục** `Client-LAN` sang cả B và C. Hai máy dùng cùng file `.cer` và cùng endpoint. App nạp chứng chỉ từ cấu hình riêng của nó, nên không cần nhập pin hoặc cài chứng chỉ vào kho Windows theo cách này.
+
+Nếu B/C đã có source và SDK, có thể dùng `dotnet build .\Design\OnlineChessGame.csproj -c Release`, đặt hai file cạnh EXE trong `Design\bin\Release\net8.0-windows`, rồi mở đúng EXE đó. Nếu cửa sổ PowerShell đang đặt `CHESS_AUTH_ENDPOINT`, biến này ưu tiên hơn endpoint trong JSON. Xóa biến khỏi cửa sổ đó hoặc đặt nó thành đúng địa chỉ LAN trước khi chạy client.
+
+## 5. Chạy thử trên máy B/C
+
+Trên **từng máy B và C**, chạy trong Windows PowerShell:
 
 ```powershell
 Test-NetConnection 192.168.1.10 -Port 8888
-Test-NetConnection 192.168.1.10 -Port 9000
 ```
 
-Chỉ tiếp tục khi thấy:
+Khi thấy `TcpTestSucceeded : True`:
 
-```text
-TcpTestSucceeded : True
-```
+1. Mở `OnlineChessGame.exe` từ thư mục đã sao chép. Nếu cần, mở **Cấu hình kết nối** trên màn hình đăng nhập và kiểm tra địa chỉ là IP máy A kèm `:8888`.
+2. Đăng ký nếu chưa có tài khoản, rồi đăng nhập bằng **hai tài khoản khác nhau** trên B và C.
+3. Trên cả hai máy, chọn cùng loại cờ và bấm **Tìm đối thủ online**. Khi vào cùng trận, thử đi một nước và gửi chat, rồi kiểm tra máy còn lại nhận được.
+4. Để xác nhận kết thúc kết nối đúng luồng, cho một người **Về sảnh** và kiểm tra thông báo đối thủ đã rời trận trên máy kia.
 
-Sau đó, chuyển đến repository trên máy client và chạy:
+Nếu chỉ có A và B, có thể chạy thêm một client trên A. Client đó cũng dùng **IP LAN của A** khi Gateway bind đích danh IP LAN.
 
-```powershell
-# Thay đường dẫn này bằng thư mục source thực tế trên máy B/C.
-Set-Location C:\Projects\DoAnNT106
-$env:CHESS_AUTH_ENDPOINT = '192.168.1.10:8888'
-$env:CHESS_CERT_PIN = Read-Host 'Dan pin SHA-256 tu ServerManager'
+## 6. Thử chuyển hướng trận mới giữa hai worker
 
-dotnet run --project Design/OnlineChessGame.csproj
-```
+1. Mở tab **Vận hành** trên máy A. Mỗi worker hiển thị PID, trạng thái, số phòng, số phiên và độ trễ/tuổi của heartbeat.
+2. Bấm **Ngừng nhận trận · Worker 1**. Trận đã được gán vào Worker 1 có thể tiếp tục. Dùng B/C tìm một trận mới và kiểm tra số phòng của Worker 2 tăng. Bấm **Nhận trận lại · Worker 1** để đưa worker về nhóm nhận trận.
+3. Trong buổi test, có thể dùng Task Manager trên máy A dừng tiến trình **đúng PID Worker 1**. Giữ Gateway tiếp tục chạy. Đăng nhập mới vẫn hoạt động, trận mới được chuyển sang Worker 2 nếu worker này còn chỗ. Gateway tự khởi động lại worker bị dừng và chỉ phân trận mới vào nó khi nhận được heartbeat hợp lệ.
 
-Pin trên B và C phải trùng pin chứng chỉ của server A. Địa chỉ server trên B/C phải là IP máy A, không phải `127.0.0.1`, `localhost` hoặc `0.0.0.0`. Tại màn hình đăng nhập, điền đúng endpoint trước khi chuyển sang Đăng ký.
+Nếu tất cả worker đang đầy hoặc không nhận trận, tìm trận mới sẽ báo thử lại. Trận đang chơi chờ tới khi có worker đủ điều kiện nhận phục hồi.
 
-## 10. Đối chiếu dữ liệu và kết quả
+## 7. Thử phục hồi giữa trận
 
-Từ Workbench máy A, chạy truy vấn không đọc mật khẩu:
+1. Cho B/C vào cùng trận. Đi vài nước rồi kiểm tra hai bàn cờ khớp nhau. Trong tab **Vận hành**, ghi nhận worker nào tăng số phòng lúc tạo trận. Nếu chỉ có một trận thử, đó là worker hiển thị một phòng. Giữ worker còn lại ở trạng thái **Sẵn sàng**, với ít nhất một chỗ trống.
+2. Trong buổi test, dừng **đúng PID worker đang giữ phòng** trên máy A. Giữ Gateway, MySQL và hai client chạy.
+3. Hai client có thể hiện **Đang chuyển worker…** trong lúc Gateway tìm chỗ. Khi đồng bộ xong, kiểm tra quân cờ, lượt đi và đồng hồ. Đồng hồ vẫn tính thời gian trong lúc chuyển worker. Thử đi tiếp và kết thúc trận bằng đầu hàng hoặc đồng ý hòa.
+4. Trên database thử, kiểm tra dòng tương ứng trong `OnlineMatches`. `generation` tăng khi chuyển worker, `revision` tăng khi xác nhận thay đổi nghiệp vụ và `result` có một kết quả cuối cho mỗi phòng.
 
 ```sql
-SELECT user_id, username, display_name, created_at
-FROM onlinechessdb.Users
-ORDER BY user_id DESC;
-
-SELECT u.username, s.game_type, s.elo, s.wins, s.losses, s.draws
-FROM onlinechessdb.Users AS u
-JOIN onlinechessdb.UserGameStats AS s ON s.user_id = u.user_id
-ORDER BY u.user_id DESC, s.game_type;
+SELECT room_id, game_type, generation, revision, result
+FROM onlinechessdb.OnlineMatches
+ORDER BY updated_at DESC
+LIMIT 10;
 ```
 
-Mỗi tài khoản mới cần có hai dòng thống kê CHESS/CARO, Elo ban đầu 1200.
+Phép thử này áp dụng cho lỗi một worker. Giữ hai client kết nối với Gateway trong suốt bài thử.
 
-Các thao tác kiểm tra mong đợi:
+## Xử lý nhanh khi lỗi
 
-| Thao tác | Kết quả |
-|---|---|
-| B đăng ký tên mới | Thành công; xuất hiện trong Users và hai dòng UserGameStats |
-| C đăng ký trùng tên B | Bị từ chối với tên đã tồn tại |
-| B đăng nhập đúng | Vào sảnh, nhận tên và Elo từ DB |
-| C dùng sai mật khẩu | Bị từ chối |
-| B/C thử nhiều yêu cầu lần lượt | Bộ đếm cả hai worker tăng |
-| Dừng server rồi đăng nhập | Client báo không kết nối được |
+| Hiện tượng | Kiểm tra |
+| --- | --- |
+| B/C báo `TcpTestSucceeded : False` | Kiểm tra Gateway có đang chạy và bind IP LAN hay không. Kiểm tra firewall có áp dụng cho profile hiện tại và B/C có ở trong phạm vi `LocalSubnet`. Wi-Fi khách hoặc Wi-Fi trường có thể chặn kết nối giữa thiết bị. Có thể thử mạng riêng hoặc hotspot cho phép các máy liên lạc. |
+| Ping timeout, TCP thành công | Tiếp tục test client. TCP `8888` là phép kiểm tra cần cho ứng dụng. |
+| TCP thành công, client báo lỗi TLS | Kiểm tra IP trong endpoint có khớp SAN, `.cer` được xuất từ PFX Gateway đang chạy, và JSON cùng `.cer` nằm cạnh đúng EXE. Kiểm tra client và server cùng phiên bản Gateway v3. |
+| Trước đây test localhost được, chuyển LAN thì lỗi | Nếu PFX chỉ có SAN cho `127.0.0.1`/localhost, đặt IP LAN trong ServerManager rồi tạo PFX mới. Xuất và phân phối lại `.cer` cho B/C. |
+| Đăng nhập được nhưng không ghép trận | Dùng hai tài khoản, chọn cùng loại cờ, kiểm tra hai worker trong tab Vận hành. Nếu phiên đăng nhập hết hạn, đăng xuất và đăng nhập lại. |
+| Client báo lỗi kho lưu trận | Kiểm tra đã chạy migration `online_matches.sql` và cấp quyền `SELECT, INSERT, UPDATE` cho tài khoản ứng dụng. |
+| MySQL báo `Access denied` | Thử cùng user, mật khẩu, host và cổng trong Workbench trên máy A. Kiểm tra cả quyền `INSERT` nếu chỉ đăng ký bị lỗi. |
 
-Kết nối auth ngắn, nên số kết nối trên UI có thể trở về 0 ngay sau khi đăng nhập; đây là bình thường. Số đó không phải số tài khoản đang ở sảnh.
-
-## 11. Các lỗi thường gặp
-
-| Hiện tượng | Cách kiểm tra |
-|---|---|
-| `/usr/lib/dotnet/host/fxr` không tồn tại | Đang gọi .NET Linux trong WSL; dùng Windows PowerShell hoặc `dotnet.exe` |
-| MySQL port 3306 không kết nối | Dịch vụ chưa chạy, sai cổng hoặc MySQL chưa được cài/cấu hình |
-| MySQL `Access denied` | Kiểm tra user, mật khẩu, host tài khoản và quyền; thử cùng thông tin bằng Workbench |
-| UI báo không truy cập được schema auth | Kiểm tra Database=onlinechessdb, đã chạy đầy đủ script, bảng/cột và quyền SELECT |
-| UI không mở được cổng | IP bind không thuộc máy A, cổng bị chiếm hoặc server console đang chạy |
-| `Test-NetConnection ... -Port 8888` thất bại | Kiểm tra server đang chạy, IP/cổng đúng, firewall đúng profile và Wi-Fi không bật client isolation |
-| `Test-NetConnection ... -Port 9000` thất bại | Kiểm tra game server trong tab Vận hành và firewall cho cổng Game |
-| TCP thành công nhưng client báo TLS | Kiểm tra pin đủ 64 hex và đúng chứng chỉ hiện tại; biến môi trường được đặt trước khi chạy client |
-| Client vẫn trỏ `127.0.0.1` | Đặt endpoint và sửa ô địa chỉ server; khởi chạy lại từ PowerShell đã cấu hình |
-| Đăng ký không tạo được tài khoản | Kiểm tra quyền INSERT trên cả Users và UserGameStats; không chỉ dựa vào nút kiểm tra MySQL vì nút đó chỉ đọc schema |
-| `reset_required` | Tài khoản cũ có mật khẩu dạng rõ; thử tài khoản mới, chưa có quy trình reset tích hợp |
-| Bấm tìm trận rồi không ghép hai máy | Kiểm tra game server cổng 9000 trên tab Vận hành, firewall và `gamePort` trên client |
-
-Kiểm tra cổng trên máy A:
+Có thể kiểm tra địa chỉ lắng nghe ngay trên máy A:
 
 ```powershell
 Get-NetTCPConnection -State Listen |
-    Where-Object { $_.LocalPort -in 8888, 9001, 9002 }
+  Where-Object { $_.LocalPort -in 8888, 9001, 9002 } |
+  Format-Table LocalAddress, LocalPort
 ```
 
-Cần thấy gateway/game trên IP LAN và hai worker trên `127.0.0.1`. Ping thất bại chưa đủ kết luận cổng ứng dụng bị chặn; kiểm tra TCP 8888 và 9000.
-
-## 12. Chạy client trên máy không có SDK (tùy chọn)
-
-Trên máy phát triển, xuất bản bản tự chứa cho Windows x64:
-
-```powershell
-dotnet publish Design/OnlineChessGame.csproj `
-  -c Release -r win-x64 --self-contained true `
-  -o .\publish\Client
-```
-
-Sao chép **toàn bộ thư mục** `publish\Client` sang B/C. Trong PowerShell tại thư mục đã sao chép:
-
-```powershell
-$env:CHESS_AUTH_ENDPOINT = '192.168.1.10:8888'
-$env:CHESS_CERT_PIN = Read-Host 'Dan pin SHA-256 tu ServerManager'
-.\OnlineChessGame.exe
-```
-
-Bản này chứa runtime, không cần cài SDK trên máy client. Vẫn cần đặt endpoint và pin trước khi chạy. Hai client đăng nhập riêng, chọn cùng chế độ ở sảnh rồi bấm **Tìm trận**. Cổng game mặc định `9000`; nếu đổi cổng trên ServerManager, đặt `CHESS_GAME_PORT` hoặc `gamePort` trong `client-config.json` cho cả hai client. Kết quả và Elo sau trận online chưa được lưu.
-
-Game server dùng cùng pin/PFX với auth. Token mở kết nối game có hạn 15 phút và dùng một lần; nếu mất kết nối game, hãy đăng xuất và đăng nhập lại. Không cần tạo chứng chỉ riêng cho game.
+Khi IP LAN máy A đổi, cập nhật IP bind và endpoint của client. Nếu SAN của PFX hiện tại chưa có IP mới, tạo lại PFX rồi xuất lại `.cer`. Để phát hành Internet bằng chứng chỉ CA công cộng, xem [hướng dẫn VPS](PHAT_HANH_VPS.md).

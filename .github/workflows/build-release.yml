@@ -11,10 +11,6 @@ on:
         description: "Public VPS host:port, for example chess.example.com:8888"
         required: true
         type: string
-      certificate_pin:
-        description: "SHA-256 DER certificate pin from the running server (64 hex characters)"
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -43,11 +39,9 @@ jobs:
         shell: pwsh
         env:
           RELEASE_ENDPOINT: ${{ inputs.server_endpoint }}
-          RELEASE_PIN: ${{ inputs.certificate_pin }}
         run: |
           if ($env:RELEASE_ENDPOINT -notmatch '^[^:\s/]+:[0-9]{1,5}$') { throw 'server_endpoint must be host:port' }
-          if ($env:RELEASE_PIN -notmatch '^[0-9a-fA-F]{64}$') { throw 'certificate_pin must contain 64 hex characters' }
-          $config = @{ endpoint = $env:RELEASE_ENDPOINT; certificatePin = $env:RELEASE_PIN.ToUpperInvariant() }
+          $config = @{ endpoint = $env:RELEASE_ENDPOINT }
           $config | ConvertTo-Json | Set-Content -Path release/client/client-config.json -Encoding utf8
           if (-not (Test-Path release/client/Engines/Stockfish/stockfish.exe)) { throw 'Stockfish binary is missing from publish output' }
           if (-not (Test-Path release/client/Engines/Stockfish/Copying.txt)) { throw 'Stockfish license is missing from publish output' }

@@ -17,7 +17,10 @@ public enum PacketType
     DRAW_RESPONSE,  // Phản hồi đồng ý / từ chối cầu hòa
     LEAVE_ROOM,     // Thoát trận về sảnh
     OPPONENT_LEFT,  // Báo đối thủ thoát / mất kết nối
-    ERROR
+    ERROR,
+    STATE,
+    CLOCK_EXPIRED,
+    RECOVERING
 }
 
 public sealed record GamePacket(
@@ -25,8 +28,21 @@ public sealed record GamePacket(
     string Sender = "",
     string RoomId = "",
     string GameMode = "CHESS", // "CHESS" hoặc "CARO"
-    string Payload = ""
+    string Payload = "",
+    long? ExpectedRevision = null,
+    MatchState? State = null
 );
+
+public sealed record MatchState(long Generation, long Revision, string Moves, int Turn,
+    long FirstMilliseconds, long SecondMilliseconds, long TurnStartedAt, long ObservedAt,
+    string? Result = null, string? Reason = null, int DrawOfferedBy = 0)
+{
+    public const int MaxMoves = 1024;
+
+    public long Remaining(int side, long now) =>
+        Math.Max(0, (side == 1 ? FirstMilliseconds : SecondMilliseconds) -
+            (Result is null && Turn == side ? Math.Max(0, now - TurnStartedAt) : 0));
+}
 
 public static class GameWire
 {
