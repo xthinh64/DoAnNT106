@@ -23,22 +23,76 @@ public sealed class ClientSession
 
     public async Task SendAsync(GamePacket packet, CancellationToken ct = default)
     {
-        await _writeLock.WaitAsync(ct);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(3));
+        bool entered = false;
         try
         {
+            await _writeLock.WaitAsync(deadline.Token);
+            entered = true;
             if (Tcp.Connected)
-                await GameWire.WriteAsync(Stream, packet, ct);
+                await GameWire.WriteAsync(Stream, packet, deadline.Token);
         }
-        catch { }
+        catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or
+            InvalidDataException or OperationCanceledException)
+        {
+            // A timed-out frame may be only partially written.
+            if (entered || !ct.IsCancellationRequested) Tcp.Dispose();
+        }
         finally
         {
-            _writeLock.Release();
+            if (entered) _writeLock.Release();
         }
     }
 }
 
 public sealed class GameRoom
 {
+    private readonly object workerGate = new();
+    private readonly TaskCompletionSource<bool> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private WorkerRoom? worker;
+    private bool closed;
+    internal SemaphoreSlim MatchGate { get; } = new(1, 1);
+    internal MatchState? State { get; set; }
+    internal bool NeedsReload { get; set; }
+    internal bool Recovering { get; set; }
+    internal bool Closing { get; set; }
+    internal WorkerRoom? Worker { get { lock (workerGate) return worker; } }
+    internal Task<bool> WaitUntilReadyAsync(CancellationToken ct) => ready.Task.WaitAsync(ct);
+    internal bool IsReady => ready.Task.IsCompletedSuccessfully && ready.Task.Result;
+    internal void MarkReady() => ready.TrySetResult(true);
+
+    internal bool AttachWorker(WorkerRoom value)
+    {
+        lock (workerGate)
+        {
+            if (closed) return false;
+            worker?.Dispose();
+            worker = value;
+            return true;
+        }
+    }
+
+    internal void DetachWorker()
+    {
+        lock (workerGate)
+        {
+            worker?.Dispose();
+            worker = null;
+        }
+    }
+
+    internal void Close()
+    {
+        lock (workerGate)
+        {
+            closed = true;
+            ready.TrySetResult(false);
+            worker?.Dispose();
+            worker = null;
+        }
+    }
+
     public required string RoomId { get; init; }
     public required string GameMode { get; init; }
     public required ClientSession Player1 { get; init; } // Đi trước (Trắng / X)
@@ -57,7 +111,7 @@ public sealed class RoomManager
     /// <summary>
     /// Đưa người chơi vào hàng chờ; nếu đã có người chờ cùng chế độ chơi thì ghép thành 1 phòng ngay.
     /// </summary>
-    public GameRoom? EnqueueOrMatch(ClientSession player, string gameMode)
+    public GameRoom? EnqueueOrMatch(ClientSession player, string gameMode, bool distinctAccounts = false)
     {
         string mode = string.IsNullOrWhiteSpace(gameMode) ? "CHESS" : gameMode.ToUpperInvariant();
 
@@ -65,13 +119,14 @@ public sealed class RoomManager
         {
             _waitingQueue.RemoveAll(x => x.Session.SessionId == player.SessionId || !x.Session.Tcp.Connected);
 
-            int idx = _waitingQueue.FindIndex(x => x.GameMode == mode);
+            int idx = _waitingQueue.FindIndex(x => x.GameMode == mode &&
+                (!distinctAccounts || x.Session.Player?.UserId != player.Player?.UserId));
             if (idx >= 0)
             {
                 var opponent = _waitingQueue[idx].Session;
                 _waitingQueue.RemoveAt(idx);
 
-                string roomId = Guid.NewGuid().ToString("N")[..6].ToUpperInvariant();
+                string roomId = Guid.NewGuid().ToString("N");
                 var room = new GameRoom
                 {
                     RoomId = roomId,
@@ -104,26 +159,28 @@ public sealed class RoomManager
 
     public async Task RemoveClientAsync(ClientSession client, bool notifyOpponent = true)
     {
-        CancelQueue(client);
-
-        if (string.IsNullOrEmpty(client.CurrentRoomId)) return;
-
-        if (_rooms.TryRemove(client.CurrentRoomId, out var room))
+        GameRoom? room;
+        ClientSession opponent;
+        lock (_queueLock)
         {
-            var opponent = room.GetOpponent(client);
+            _waitingQueue.RemoveAll(x => x.Session.SessionId == client.SessionId);
+            if (string.IsNullOrEmpty(client.CurrentRoomId)) return;
+            string id = client.CurrentRoomId;
+            client.CurrentRoomId = string.Empty;
+            if (!_rooms.TryRemove(id, out room)) return;
+            room.Close();
+            opponent = room.GetOpponent(client);
             opponent.CurrentRoomId = string.Empty;
-
-            if (notifyOpponent)
-            {
-                await opponent.SendAsync(new GamePacket(
-                    PacketType.OPPONENT_LEFT,
-                    Sender: client.Username,
-                    RoomId: room.RoomId,
-                    GameMode: room.GameMode,
-                    Payload: $"{client.Username} đã rời khỏi trận đấu."
-                ));
-            }
         }
-        client.CurrentRoomId = string.Empty;
+        if (notifyOpponent && room.State?.Result is (null or "ABORTED"))
+            await opponent.SendAsync(new GamePacket(
+                PacketType.OPPONENT_LEFT,
+                Sender: client.Username,
+                RoomId: room.RoomId,
+                GameMode: room.GameMode,
+                Payload: $"{client.Username} đã rời khỏi trận đấu."
+            ));
     }
+
+    internal GameRoom[] ActiveRooms() => _rooms.Values.ToArray();
 }

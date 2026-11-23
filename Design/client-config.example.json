@@ -1,5 +1,3 @@
 {
-  "endpoint": "YOUR_VPS_HOST:8888",
-  "certificatePin": "PASTE_64_CHARACTER_SHA256_CERTIFICATE_PIN_HERE",
-  "gamePort": 9000
+  "endpoint": "YOUR_VPS_HOST:8888"
 }

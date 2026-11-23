@@ -139,7 +139,7 @@ namespace OnlineChessGame
             catch (OperationCanceledException) { if (!IsDisposed) lblError.Text = "Kết nối đã hủy hoặc hết thời gian chờ."; }
             catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or System.Security.Authentication.AuthenticationException or ArgumentException or InvalidOperationException)
             {
-                if (!IsDisposed) lblError.Text = "Không thể kết nối TLS. Kiểm tra máy chủ và mã ghim chứng chỉ.";
+                if (!IsDisposed) lblError.Text = "Không thể xác thực chứng chỉ TLS. Kiểm tra địa chỉ máy chủ và CA tin cậy.";
             }
             finally
             {

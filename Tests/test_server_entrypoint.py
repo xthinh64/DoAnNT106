@@ -8,7 +8,7 @@ class ServerEntrypointContract(unittest.TestCase):
         path = ROOT / 'Server/Program.cs'
         self.assertTrue(path.exists(), 'Missing executable server entry point')
         source = path.read_text(encoding='utf-8-sig')
-        for value in ['CHESS_DB_CONNECTION', 'CHESS_CERT_PATH', 'CHESS_CERT_PASSWORD', 'new AuthCluster', 'StartAsync', 'CancelKeyPress']:
+        for value in ['CHESS_DB_CONNECTION', 'CHESS_CERT_PATH', 'CHESS_CERT_PASSWORD', 'new GameWorkerPool', 'new GameServer', 'WaitUntilReadyAsync', 'CancelKeyPress']:
             self.assertIn(value, source)
         self.assertNotIn('Pwd=', source)
 

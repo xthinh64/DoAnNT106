@@ -9,14 +9,13 @@ GitHub Actions tại `.github/workflows/build-release.yml` tạo file
 Người chơi không cần chạy PowerShell, cài .NET SDK hay tải Stockfish riêng.
 
 Stockfish chạy trên máy người chơi cho chế độ Solo. Game server đã có hàng chờ,
-chuyển nước đi và chat cho hai người trên LAN. Kênh game dùng TLS 1.2/1.3 với cùng certificate pin như auth và token dùng một lần sau đăng nhập.
-Mẫu `.env` vẫn đặt `CHESS_GAME_BIND_ADDRESS=127.0.0.1`; khi triển khai game trên VPS,
-đổi sang địa chỉ interface phù hợp và mở cổng TCP `9000`. Cập nhật client/server cùng phiên bản.
-Server chưa xác nhận luật nước đi và chưa lưu kết quả/Elo, nên chưa bảo đảm tính công bằng cho Rank công khai.
+chuyển nước đi và chat. Gateway TCP/TLS `8888` phục vụ cả auth và gameplay.
+Hai worker chạy nội bộ trên loopback. Cập nhật client và server cùng phiên bản.
+Worker xác nhận nước đi và Gateway lưu trạng thái, kết quả trong MySQL. Ghép theo Elo và cập nhật Elo sau trận chưa có.
 
 ## Chuẩn bị VPS trước khi phát hành client
 
-1. Trên VPS Linux x64, chuẩn bị MySQL và schema theo README chính. Tạo thư mục
+1. Trên VPS Linux x64, chuẩn bị MySQL, schema và quyền `OnlineMatches` theo [hướng dẫn database](HUONG_DAN_CHAY_LAN.md#1-máy-a-chuẩn-bị-mysql). Tạo thư mục
    server riêng, chẳng hạn `/opt/onlinechess`, và đưa gói server vào đó. Có thể
    tạo gói ban đầu bằng `dotnet publish Server/OnlineChessGame.Server.csproj
    -c Release -r linux-x64 --self-contained true -o release/server` trên máy
@@ -24,11 +23,10 @@ Server chưa xác nhận luật nước đi và chưa lưu kết quả/Elo, nên
 2. Sao chép `docs/server.env.example` thành `.env` cạnh
    `OnlineChessGame.Server`, rồi thay mật khẩu DB, đường dẫn PFX và mật khẩu PFX.
    `.env` là file riêng của VPS, không đưa lên GitHub hay vào gói tải công khai.
-3. Tạo thư mục chứa PFX và chạy `./OnlineChessGame.Server --create-cert` một
-   lần. Lệnh sẽ tạo PFX và in `CHESS_CERT_PIN` gồm 64 ký tự. Giữ PFX và mật khẩu
-   trên VPS, ghi lại pin để tạo gói client. Nếu đã có PFX từ ServerManager,
-   bạn có thể dùng lại file đó và lấy đúng pin của chứng chỉ ấy.
-4. Chạy `./OnlineChessGame.Server`; kiểm tra dòng `Auth ready`. Mở cổng TCP
+3. Dùng tên miền trỏ tới VPS và chứng chỉ từ CA công cộng có SAN khớp tên miền.
+   Cấu hình PFX chứa khóa riêng và chứng chỉ trung gian cần thiết. Giữ PFX và
+   mật khẩu trên VPS.
+4. Chạy `./OnlineChessGame.Server` và kiểm tra dòng `Gateway ready`. Mở cổng TCP
    gateway (mặc định 8888) trên firewall VPS và nhà cung cấp. Cổng MySQL 3306
    chỉ cần truy cập nội bộ nếu MySQL nằm trên cùng VPS.
 
@@ -38,8 +36,7 @@ Vào GitHub → Actions → **Build downloadable client and Linux server** →
 **Run workflow**, điền:
 
 - `release_tag`: ví dụ `v1.0.0` (mỗi lần phát hành dùng tag mới).
-- `server_endpoint`: IP hoặc domain công khai của VPS, dạng `host:8888`.
-- `certificate_pin`: pin SHA-256 64 ký tự vừa lấy từ server.
+- `server_endpoint` là tên miền đã cấu hình chứng chỉ, dạng `host:8888`.
 
 Workflow tải Stockfish chính thức trong môi trường GitHub Actions, publish
 Windows client và Linux server, kiểm tra engine và giấy phép, rồi tạo GitHub
@@ -47,8 +44,8 @@ Release với hai file tải về. Để người ngoài tải được, reposit
 public. Không chạy `.ps1` trên VPS hay máy người chơi. Repo cần cho phép GitHub
 Actions tạo Release với quyền `contents: write`.
 
-Nếu thay chứng chỉ PFX, cần phát hành lại client với pin mới. Nếu đổi IP/domain
-VPS, phát hành lại client hoặc cập nhật `client-config.json` cạnh file `.exe`.
+Khi gia hạn chứng chỉ, cập nhật PFX trên VPS và khởi động lại server. Nếu đổi
+tên miền, cập nhật `client-config.json` cạnh file `.exe`.
 
 ## Giấy phép và phạm vi
 

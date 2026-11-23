@@ -23,7 +23,6 @@ internal static class Program
         capture = args.Contains("--capture");
         Console.OutputEncoding = Encoding.UTF8;
         // Guard against any accidental valid submission reaching a socket.
-        Environment.SetEnvironmentVariable("CHESS_CERT_PIN", "");
         Environment.SetEnvironmentVariable("CHESS_AUTH_ENDPOINT", "invalid-endpoint");
         using var deadline = new System.Threading.Timer(_ =>
         {
@@ -156,16 +155,16 @@ internal static class Program
             Check(!string.IsNullOrWhiteSpace(text), "Dashboard has no visible content");
             return Task.CompletedTask;
         });
-        await Test("logout clears Player/GameToken and returns to login", async () =>
+        await Test("logout clears Player/SessionToken and returns to login", async () =>
         {
             SetAuth("Player",new PlayerProfile(42,"smoke-user","Smoke User",1234,1250));
-            SetAuth("GameToken","smoke-token-not-a-credential");
+            SetAuth("SessionToken","smoke-token-not-a-credential");
             var old = Dashboard();
             C<Button>(old,"btnLogout").PerformClick();
             await Task.Delay(50);
             Check(context.MainForm is LoginForm && context.MainForm.Visible, "Logout navigation failed");
             Check(old.IsDisposed,"Logout left dashboard alive");
-            Check(GetAuth("GameToken") is null,"Logout left GameToken in memory");
+            Check(GetAuth("SessionToken") is null,"Logout left SessionToken in memory");
             Check(GetAuth("Player") is null,"Logout left Player in memory");
             Empty(context.MainForm!);
         });
@@ -273,7 +272,7 @@ internal static class Program
             Check(Field<int[,]>(f,"board")[7,7]==1,"Replayed game rejected opening click");
         });
         SetAuth("Player",null);
-        SetAuth("GameToken",null);
+        SetAuth("SessionToken",null);
     }
 
     static async Task Test(string name,Func<Task> body)

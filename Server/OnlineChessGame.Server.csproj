@@ -8,5 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="../Auth/OnlineChessGame.Auth.csproj" />
     <ProjectReference Include="../Network/OnlineChessGame.Network.csproj" />
+    <ProjectReference Include="../Chess/OnlineChessGame.Chess.csproj" />
+    <ProjectReference Include="../Caro/OnlineChessGame.Caro.csproj" />
   </ItemGroup>
 </Project>
