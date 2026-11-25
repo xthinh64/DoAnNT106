@@ -139,15 +139,22 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
         room.NeedsReload = false;
         if (saved.Result is not null)
         {
+            room.Recovering = false;
+            room.RecoveryStartedAt = null;
             await PublishAsync(room, Snapshot(room, saved), ct);
             room.DetachWorker();
             return null;
         }
+        long pausedMs = room.RecoveryStartedAt is long pausedAt ? Math.Max(0, Now - pausedAt) : 0;
         if (room.Worker is not { IsAvailable: true } surviving)
         {
             room.DetachWorker();
-            surviving = await workers.OpenRoomAsync(room, ct);
-            var fenced = saved with { Generation = saved.Generation + 1 };
+            surviving = await workers.OpenRoomAsync(room, ct, isFailover: true);
+            var fenced = saved with
+            {
+                Generation = saved.Generation + 1,
+                TurnStartedAt = saved.TurnStartedAt + pausedMs
+            };
             try
             {
                 if (!await store.UpdateAsync(room.RoomId, saved, fenced, ct))
@@ -161,7 +168,14 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
             catch { surviving.Dispose(); throw; }
             room.State = fenced;
         }
+        else if (pausedMs > 0)
+        {
+            var compensated = saved with { TurnStartedAt = saved.TurnStartedAt + pausedMs };
+            if (await store.UpdateAsync(room.RoomId, saved, compensated, ct))
+                room.State = compensated;
+        }
         room.Recovering = false;
+        room.RecoveryStartedAt = null;
         await PublishAsync(room, Snapshot(room, room.State!), ct);
         return surviving;
     }
@@ -170,6 +184,7 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
     {
         if (room.Recovering) return;
         room.Recovering = true;
+        room.RecoveryStartedAt = Now;
         await PublishAsync(room, new GamePacket(PacketType.RECOVERING, RoomId: room.RoomId, GameMode: room.GameMode), ct);
     }
 

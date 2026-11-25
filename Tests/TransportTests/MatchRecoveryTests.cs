@@ -82,7 +82,7 @@ public sealed class MatchRecoveryTests
         Assert.Equal(2, recovered.Generation);
         Assert.Equal(confirmed.Revision, recovered.Revision);
         Assert.Equal(confirmed.Moves, recovered.Moves);
-        Assert.Equal(confirmed.TurnStartedAt, recovered.TurnStartedAt);
+        Assert.True(recovered.TurnStartedAt >= confirmed.TurnStartedAt);
         Assert.False(await store.UpdateAsync(roomId, confirmed, confirmed with { Revision = 2, Result = "DRAW" }, ct));
 
         await MoveAsync(two, roomId, second, 0, ct);
@@ -104,6 +104,71 @@ public sealed class MatchRecoveryTests
         Assert.Equal(result, (await ReadAsync(two, PacketType.STATE, ct)).State);
         Assert.False(await store.UpdateAsync(roomId, result, result with { Revision = 4, Result = "SECOND" }, ct));
         Assert.Equal(1, store.Results);
+    }
+
+    [Fact]
+    public async Task ClockFreezesDuringProlongedRecoveryAndReportsApplyMetrics()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+        var ct = deadline.Token;
+        using var rsa = RSA.Create(2048);
+        var req = new CertificateRequest("CN=Clock Test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var san = new SubjectAlternativeNameBuilder();
+        san.AddIpAddress(IPAddress.Loopback);
+        req.CertificateExtensions.Add(san.Build());
+        using var generated = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(1));
+        using var cert = new X509Certificate2(generated.Export(X509ContentType.Pfx), (string?)null, X509KeyStorageFlags.UserKeySet);
+        using var trust = new X509Certificate2(cert.RawData);
+        using var listener1 = new TcpListener(IPAddress.Loopback, 0);
+        using var listener2 = new TcpListener(IPAddress.Loopback, 0);
+        listener1.Start(); listener2.Start();
+        int port1 = ((IPEndPoint)listener1.LocalEndpoint).Port;
+        int port2 = ((IPEndPoint)listener2.LocalEndpoint).Port;
+        listener1.Stop(); listener2.Stop();
+
+        await using var workers = new GameWorkerPool();
+        workers.Start(port1, port2, typeof(GameServer).Assembly.Location);
+        await workers.WaitUntilReadyAsync(ct);
+        workers.SetDraining(1, true);
+        var auth = new FixtureAuth();
+        var store = new FixtureStore();
+        var context = SslStreamCertificateContext.Create(cert, null, offline: true);
+        await using var gateway = new GameServer(IPAddress.Loopback, context, new GameSessions(auth), auth, workers, 0, store);
+        gateway.Start(ct);
+        var client = new GatewayClient($"127.0.0.1:{gateway.Port}", trust);
+        using var aTcp = new TcpClient(); using var bTcp = new TcpClient();
+        using var a = await ConnectAsync(client, aTcp, "a", ct);
+        using var b = await ConnectAsync(client, bTcp, "b", ct);
+        await GameWire.WriteAsync(a, new GamePacket(PacketType.FIND_MATCH, GameMode: "CHESS"), ct);
+        await Task.Delay(50, ct);
+        await GameWire.WriteAsync(b, new GamePacket(PacketType.FIND_MATCH, GameMode: "CHESS"), ct);
+        var matchA = await ReadAsync(a, PacketType.MATCH_FOUND, ct);
+        await ReadAsync(b, PacketType.MATCH_FOUND, ct);
+        Stream one = matchA.Payload.StartsWith("FIRST|", StringComparison.Ordinal) ? a : b;
+        Stream two = ReferenceEquals(one, a) ? b : a;
+        string roomId = matchA.RoomId;
+
+        await MoveAsync(one, roomId, "e2e4", 0, ct);
+        var confirmed = (await ReadAsync(one, PacketType.STATE, ct)).State!;
+        await ReadAsync(two, PacketType.STATE, ct);
+
+        while (workers.GetSnapshot(0).AvgApplyMs <= 0) await Task.Delay(50, ct);
+        Assert.True(workers.GetSnapshot(0).AvgApplyMs > 0);
+
+        using var crashed = Process.GetProcessById(workers.GetSnapshot(0).ProcessId!.Value);
+        crashed.Kill();
+        await crashed.WaitForExitAsync(ct);
+
+        await ReadAsync(one, PacketType.RECOVERING, ct);
+        await ReadAsync(two, PacketType.RECOVERING, ct);
+        await Task.Delay(1200, ct);
+        workers.SetDraining(1, false);
+
+        var recovered = (await ReadAsync(one, PacketType.STATE, ct)).State!;
+        await ReadAsync(two, PacketType.STATE, ct);
+        Assert.Equal(2, recovered.Generation);
+        Assert.True(recovered.TurnStartedAt - confirmed.TurnStartedAt >= 900);
+        Assert.True(recovered.Remaining(recovered.Turn, recovered.ObservedAt) > 598_000);
     }
 
     private static Task MoveAsync(Stream stream, string room, string move, long revision, CancellationToken ct) =>

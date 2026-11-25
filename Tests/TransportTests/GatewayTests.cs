@@ -92,7 +92,7 @@ public sealed class GatewayTests
         using var withKey = issued.CopyWithPrivateKey(leafKey);
         using var leaf = new X509Certificate2(withKey.Export(X509ContentType.Pfx), (string?)null, X509KeyStorageFlags.UserKeySet);
 
-        await using var workers = new GameWorkerPool(capacity: 2);
+        await using var workers = new GameWorkerPool(capacity: 2, admissionCapacity: 4);
         var port1 = new TcpListener(IPAddress.Loopback, 0);
         var port2 = new TcpListener(IPAddress.Loopback, 0);
         port1.Start(); port2.Start();
@@ -226,5 +226,72 @@ public sealed class GatewayTests
         Assert.Equal(PacketType.MATCH_FOUND, second?.Type);
         Assert.Equal(first!.RoomId, second!.RoomId);
         return first.RoomId;
+    }
+
+    [Fact]
+    public async Task DefaultPoolEnforcesNMinusOneAdmissionAndReportsHeartbeatMetrics()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var ct = deadline.Token;
+        using var rootKey = RSA.Create(2048);
+        var caRequest = new CertificateRequest("CN=Test N-1 CA", rootKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        caRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        caRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign, true));
+        using var root = caRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1));
+        using var leafKey = RSA.Create(2048);
+        var leafRequest = new CertificateRequest("CN=127.0.0.1", leafKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var san = new SubjectAlternativeNameBuilder();
+        san.AddIpAddress(IPAddress.Loopback);
+        leafRequest.CertificateExtensions.Add(san.Build());
+        using var issued = leafRequest.Create(root, DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(1),
+            RandomNumberGenerator.GetBytes(16));
+        using var withKey = issued.CopyWithPrivateKey(leafKey);
+        using var leaf = new X509Certificate2(withKey.Export(X509ContentType.Pfx), (string?)null, X509KeyStorageFlags.UserKeySet);
+
+        await using var workers = new GameWorkerPool(capacity: 2);
+        Assert.Equal(2, workers.AdmissionCapacity);
+        var port1 = new TcpListener(IPAddress.Loopback, 0);
+        var port2 = new TcpListener(IPAddress.Loopback, 0);
+        port1.Start(); port2.Start();
+        int first = ((IPEndPoint)port1.LocalEndpoint).Port;
+        int second = ((IPEndPoint)port2.LocalEndpoint).Port;
+        port1.Stop(); port2.Stop();
+        workers.Start(first, second, typeof(GameServer).Assembly.Location);
+        await workers.WaitUntilReadyAsync(ct);
+
+        var auth = new CountingAuth();
+        var context = SslStreamCertificateContext.Create(leaf, new X509Certificate2Collection(root), offline: true);
+        await using var server = new GameServer(IPAddress.Loopback, context, new GameSessions(auth), auth, workers, 0);
+        server.Start(ct);
+        var client = new GatewayClient($"127.0.0.1:{server.Port}", root);
+
+        using var aTcp = new TcpClient(); using var bTcp = new TcpClient();
+        using var cTcp = new TcpClient(); using var dTcp = new TcpClient();
+        using var eTcp = new TcpClient(); using var fTcp = new TcpClient();
+        using var a = await SignInAndConnectAsync(client, aTcp, "alice", ct);
+        using var b = await SignInAndConnectAsync(client, bTcp, "bob", ct);
+        using var c = await SignInAndConnectAsync(client, cTcp, "carol", ct);
+        using var d = await SignInAndConnectAsync(client, dTcp, "dan", ct);
+        using var e = await SignInAndConnectAsync(client, eTcp, "eva", ct);
+        using var f = await SignInAndConnectAsync(client, fTcp, "felix", ct);
+
+        string room1 = await MatchAsync(a, b, "CHESS", ct);
+        await MatchAsync(c, d, "CARO", ct);
+        Assert.Equal(2, workers.GetSnapshot(0).ReservedRooms + workers.GetSnapshot(1).ReservedRooms);
+
+        await GameWire.WriteAsync(e, new GamePacket(PacketType.FIND_MATCH, GameMode: "CHESS"), ct);
+        await GameWire.WriteAsync(f, new GamePacket(PacketType.FIND_MATCH, GameMode: "CHESS"), ct);
+        Assert.Equal(PacketType.ERROR, (await GameWire.ReadAsync<GamePacket>(e, ct))?.Type);
+        Assert.Equal(PacketType.ERROR, (await GameWire.ReadAsync<GamePacket>(f, ct))?.Type);
+
+        await GameWire.WriteAsync(a, new GamePacket(PacketType.MOVE, RoomId: room1, Payload: "e2e4"), ct);
+        Assert.Equal("e2e4", (await GameWire.ReadAsync<GamePacket>(b, ct))?.Payload);
+        await WaitForAsync(() =>
+        {
+            var s0 = workers.GetSnapshot(0);
+            var s1 = workers.GetSnapshot(1);
+            return s0.CpuPercent >= 0 && s1.CpuPercent >= 0 && s0.InFlightRequests == 0 && s1.InFlightRequests == 0 &&
+                   s0.Sessions + s1.Sessions == 4;
+        }, ct);
     }
 }
