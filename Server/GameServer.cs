@@ -54,6 +54,9 @@ public sealed class GameServer : IAsyncDisposable
         _listener.Start(128);
         _acceptLoop = Task.Run(() => AcceptLoopAsync(_stop.Token));
         if (durable is not null)
+
+            durable.RecoverOnStartupAsync(_stop.Token).GetAwaiter().GetResult();
+
             matchMonitor = Task.Run(() => durable.RunAsync(_roomManager, _stop.Token));
     }
 
@@ -130,6 +133,10 @@ public sealed class GameServer : IAsyncDisposable
             session = new ClientSession(tcp, tls) { Username = player.Username, Player = player };
             _clients[session.SessionId] = session;
             await session.SendAsync(new GamePacket(PacketType.AUTHENTICATED), handshake.Token);
+
+            if (durable is not null)
+                await durable.TryResumePlayerAsync(session, _roomManager, handshake.Token);
+
             using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
             lifetime.CancelAfter(TimeSpan.FromHours(8));
             ct = lifetime.Token;

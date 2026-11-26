@@ -184,4 +184,6 @@ public sealed class RoomManager
     }
 
     internal GameRoom[] ActiveRooms() => _rooms.Values.ToArray();
+
+    internal void RegisterRecoveredRoom(GameRoom room) => _rooms[room.RoomId] = room;
 }

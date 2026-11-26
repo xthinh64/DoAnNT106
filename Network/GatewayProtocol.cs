@@ -5,6 +5,38 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace OnlineChessGame.Network;
 
+// Trong Network/GatewayProtocol.cs
+public static class GatewayMessageTypes
+{
+    // ... các type hiện có (LOGIN, JOIN_QUEUE, MOVE, ...)
+
+    // Gateway -> Client: Yêu cầu client mở lại bàn cờ đang dở ngay sau khi login
+    public const string MatchResume = "MATCH_RESUME";
+
+    // Gateway -> Client: Cả 2 người chơi đã kết nối lại, tiếp tục đánh
+    public const string MatchResumed = "MATCH_RESUMED";
+
+    // Gateway -> Client: Ván bị hủy do quá hạn chờ phục hồi
+    public const string MatchAborted = "MATCH_ABORTED";
+
+    // Gateway -> Worker (nội bộ): Nạp lại trạng thái ván từ MySQL vào RAM của Worker
+    public const string WorkerRestoreMatch = "RESTORE_MATCH";
+}
+
+public sealed class MatchResumePayload
+{
+    public string MatchId { get; set; } = "";
+    public string Ticket { get; set; } = "";        // Vé phiên chơi mới cấp lại
+    public string GameType { get; set; } = "";      // "CHESS" hoặc "CARO"
+    public string PlayerSide { get; set; } = "";    // "WHITE"/"BLACK" hoặc "X"/"O"
+    public string OpponentName { get; set; } = "";
+    public bool OpponentConnected { get; set; }
+    public string BoardState { get; set; } = "";    // Chuỗi FEN (Cờ vua) hoặc chuỗi bàn cờ (Caro)
+    public string CurrentTurn { get; set; } = "";
+    public int Revision { get; set; }
+    public int SecondsRemaining { get; set; }       // Thời gian chờ đối thủ còn lại
+}
+
 public sealed record GatewayRequest(int Version, string Operation, AuthRequest? Auth = null, string? Token = null)
 {
     public const int CurrentVersion = 3;
