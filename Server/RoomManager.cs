@@ -56,6 +56,7 @@ public sealed class GameRoom
     internal MatchState? State { get; set; }
     internal bool NeedsReload { get; set; }
     internal bool Recovering { get; set; }
+    internal long? RecoveryStartedAt { get; set; }
     internal bool Closing { get; set; }
     internal WorkerRoom? Worker { get { lock (workerGate) return worker; } }
     internal Task<bool> WaitUntilReadyAsync(CancellationToken ct) => ready.Task.WaitAsync(ct);
@@ -183,4 +184,6 @@ public sealed class RoomManager
     }
 
     internal GameRoom[] ActiveRooms() => _rooms.Values.ToArray();
+
+    internal void RegisterRecoveredRoom(GameRoom room) => _rooms[room.RoomId] = room;
 }

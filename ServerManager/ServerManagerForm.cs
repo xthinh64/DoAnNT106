@@ -463,7 +463,7 @@ public sealed class ServerManagerForm : Form
             cells[4].Value = snapshot is null ? "—" : $"{snapshot.Rooms}/{snapshot.Capacity}";
             cells[5].Value = snapshot?.Sessions.ToString() ?? "—";
             cells[6].Value = snapshot?.HeartbeatLatency is { } latency && snapshot.HeartbeatAge is { } age
-                ? $"{latency.TotalMilliseconds:F0} ms · {age.TotalSeconds:F1} s" : "—";
+                ? $"{latency.TotalMilliseconds:F0} ms · {age.TotalSeconds:F1} s · CPU {snapshot.CpuPercent:F0}% · {snapshot.AvgApplyMs:F1} ms/nước" : "—";
             drainButtons[i].Enabled = snapshot is not null && !busy && !closing;
             drainButtons[i].Text = snapshot?.Draining == true ? $"Nhận trận lại · Worker {i + 1}" : $"Ngừng nhận trận · Worker {i + 1}";
         }

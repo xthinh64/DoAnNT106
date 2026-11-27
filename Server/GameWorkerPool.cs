@@ -13,7 +13,8 @@ namespace OnlineChessGame.Server;
 public enum WorkerStatus { Starting, Ready, Full, Draining, Offline }
 
 public sealed record WorkerSnapshot(int Port, int? ProcessId, WorkerStatus Status, int Rooms, int Sessions,
-    int Capacity, int ReservedRooms, TimeSpan? HeartbeatAge, TimeSpan? HeartbeatLatency, bool Draining);
+    int Capacity, int ReservedRooms, TimeSpan? HeartbeatAge, TimeSpan? HeartbeatLatency, bool Draining,
+    double CpuPercent = 0, double AvgApplyMs = 0, int InFlightRequests = 0);
 
 public sealed class GameWorkerPool : IAsyncDisposable
 {
@@ -47,15 +48,22 @@ public sealed class GameWorkerPool : IAsyncDisposable
     private readonly object gate = new();
     private readonly CancellationTokenSource stop = new();
     private readonly int capacity;
+    private readonly int admissionCapacity;
     private Worker[] workers = [];
     private string? workerAssembly;
     private Task? monitoring;
     private uint next;
 
-    public GameWorkerPool(int capacity = DefaultRoomCapacity)
+    public int AdmissionCapacity => admissionCapacity;
+
+    public GameWorkerPool(int capacity = DefaultRoomCapacity, int? admissionCapacity = null)
     {
         if (capacity is < 1 or > MaxRoomCapacity) throw new ArgumentOutOfRangeException(nameof(capacity));
+        int effectiveAdmission = admissionCapacity ?? capacity;
+        if (effectiveAdmission < 1 || effectiveAdmission > 2 * capacity)
+            throw new ArgumentOutOfRangeException(nameof(admissionCapacity));
         this.capacity = capacity;
+        this.admissionCapacity = effectiveAdmission;
     }
 
     public void Start(int firstPort, int secondPort, string? workerAssembly = null)
@@ -106,7 +114,8 @@ public sealed class GameWorkerPool : IAsyncDisposable
                 : worker.Draining ? WorkerStatus.Draining
                 : AtCapacity(instance!) ? WorkerStatus.Full : WorkerStatus.Ready;
             return new(worker.Port, exited ? null : instance?.Process.Id, status, heartbeat?.Rooms ?? 0, heartbeat?.Sessions ?? 0,
-                capacity, instance?.Reservations ?? 0, age, heartbeat is null ? null : instance!.Latency, worker.Draining);
+                capacity, instance?.Reservations ?? 0, age, heartbeat is null ? null : instance!.Latency, worker.Draining,
+                heartbeat?.CpuPercent ?? 0, heartbeat?.AvgApplyMs ?? 0, heartbeat?.InFlightRequests ?? 0);
         }
     }
 
@@ -158,7 +167,8 @@ public sealed class GameWorkerPool : IAsyncDisposable
             using var tcp = await ConnectAsync(worker.Port, new(instance.Secret), timeout.Token);
             var heartbeat = await GameWire.ReadAsync<WorkerHeartbeat>(tcp.GetStream(), timeout.Token);
             if (heartbeat is not { Ready: true } || heartbeat.Capacity != capacity ||
-                heartbeat.Rooms < 0 || heartbeat.Rooms > capacity || heartbeat.Sessions != 2 * heartbeat.Rooms)
+                heartbeat.Rooms < 0 || heartbeat.Rooms > capacity || heartbeat.Sessions != 2 * heartbeat.Rooms ||
+                heartbeat.CpuPercent < 0 || heartbeat.AvgApplyMs < 0 || heartbeat.InFlightRequests < 0)
                 throw new InvalidDataException("Invalid game worker heartbeat.");
             lock (gate)
             {
@@ -179,7 +189,7 @@ public sealed class GameWorkerPool : IAsyncDisposable
         }
     }
 
-    internal async Task<WorkerRoom> OpenRoomAsync(GameRoom room, CancellationToken ct)
+    internal async Task<WorkerRoom> OpenRoomAsync(GameRoom room, CancellationToken ct, bool isFailover = false)
     {
         var tried = new HashSet<Worker>();
         while (true)
@@ -190,11 +200,21 @@ public sealed class GameWorkerPool : IAsyncDisposable
             lock (gate)
             {
                 if (workers.Length == 0) break;
+                if (!isFailover)
+                {
+                    int totalLoad = workers.Sum(w => w.Current is { } c && !c.Process.HasExited ? Load(c) : 0);
+                    if (totalLoad >= admissionCapacity) break;
+                }
                 int start = (int)(next++ % (uint)workers.Length);
                 worker = workers.Skip(start).Concat(workers.Take(start))
                     .Where(w => !tried.Contains(w) && !w.Draining &&
                         w.Current is { } current && IsResponsive(current) && !AtCapacity(current))
-                    .OrderBy(w => Load(w.Current!)).ThenBy(w => w.Current!.Latency).FirstOrDefault();
+                    .OrderBy(w => Load(w.Current!))
+                    .ThenBy(w => w.Current!.Heartbeat?.InFlightRequests ?? 0)
+                    .ThenBy(w => w.Current!.Heartbeat?.AvgApplyMs ?? 0)
+                    .ThenBy(w => w.Current!.Heartbeat?.CpuPercent ?? 0)
+                    .ThenBy(w => w.Current!.Latency)
+                    .FirstOrDefault();
                 if (worker is null) break;
                 tried.Add(worker);
                 instance = worker.Current!;

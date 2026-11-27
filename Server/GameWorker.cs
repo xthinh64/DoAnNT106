@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -8,7 +9,51 @@ namespace OnlineChessGame.Server;
 
 internal sealed record WorkerRequest(string Secret, WorkerRoomRequest? Room = null);
 internal sealed record WorkerRoomRequest(string RoomId, string Mode, string First, string Second);
-internal sealed record WorkerHeartbeat(bool Ready, int Rooms, int Sessions, int Capacity);
+internal sealed record WorkerHeartbeat(bool Ready, int Rooms, int Sessions, int Capacity,
+    double CpuPercent = 0, double AvgApplyMs = 0, int InFlightRequests = 0);
+
+internal sealed class WorkerMetrics
+{
+    private readonly Process process = Process.GetCurrentProcess();
+    private readonly object gate = new();
+    private TimeSpan lastCpuTime;
+    private long lastCpuSample;
+    private double avgApplyMs;
+    private int inFlight;
+
+    public WorkerMetrics()
+    {
+        lastCpuTime = process.TotalProcessorTime;
+        lastCpuSample = Stopwatch.GetTimestamp();
+    }
+
+    public void EnterRequest() => Interlocked.Increment(ref inFlight);
+    public void ExitRequest() => Interlocked.Decrement(ref inFlight);
+
+    public void RecordApply(double elapsedMs)
+    {
+        lock (gate)
+            avgApplyMs = avgApplyMs == 0 ? elapsedMs : avgApplyMs * 0.8 + elapsedMs * 0.2;
+    }
+
+    public WorkerHeartbeat Snapshot(int rooms, int capacity)
+    {
+        double cpuPercent;
+        double applyMs;
+        lock (gate)
+        {
+            long nowStamp = Stopwatch.GetTimestamp();
+            TimeSpan nowCpu = process.TotalProcessorTime;
+            double wallMs = Stopwatch.GetElapsedTime(lastCpuSample, nowStamp).TotalMilliseconds;
+            double cpuMs = (nowCpu - lastCpuTime).TotalMilliseconds;
+            cpuPercent = wallMs > 0 ? Math.Clamp(cpuMs / (wallMs * Environment.ProcessorCount) * 100.0, 0.0, 100.0) : 0.0;
+            lastCpuSample = nowStamp;
+            lastCpuTime = nowCpu;
+            applyMs = avgApplyMs;
+        }
+        return new WorkerHeartbeat(true, rooms, 2 * rooms, capacity, cpuPercent, applyMs, Math.Max(0, Volatile.Read(ref inFlight)));
+    }
+}
 
 public static class GameWorker
 {
@@ -23,20 +68,21 @@ public static class GameWorker
         });
         var listener = new TcpListener(IPAddress.Loopback, port);
         var slots = new SemaphoreSlim(capacity, capacity);
+        var metrics = new WorkerMetrics();
         listener.Start();
         try
         {
             while (!stop.IsCancellationRequested)
             {
                 var tcp = await listener.AcceptTcpClientAsync(stop.Token);
-                _ = ServeAsync(tcp, secret, slots, capacity, stop.Token);
+                _ = ServeAsync(tcp, secret, slots, capacity, metrics, stop.Token);
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         finally { listener.Stop(); }
     }
 
-    private static async Task ServeAsync(TcpClient tcp, string secret, SemaphoreSlim slots, int capacity, CancellationToken ct)
+    private static async Task ServeAsync(TcpClient tcp, string secret, SemaphoreSlim slots, int capacity, WorkerMetrics metrics, CancellationToken ct)
     {
         using (tcp)
         try
@@ -52,7 +98,7 @@ public static class GameWorker
             if (request.Room is not { } room)
             {
                 int rooms = capacity - slots.CurrentCount;
-                await GameWire.WriteAsync(stream, new WorkerHeartbeat(true, rooms, 2 * rooms, capacity), setup.Token);
+                await GameWire.WriteAsync(stream, metrics.Snapshot(rooms, capacity), setup.Token);
                 return;
             }
             if (!slots.Wait(0))
@@ -72,16 +118,20 @@ public static class GameWorker
                         await GameWire.WriteAsync(stream, packet, ct);
                         continue;
                     }
+                    metrics.EnterRequest();
                     GamePacket response;
                     try
                     {
+                        long applyStart = Stopwatch.GetTimestamp();
                         int side = packet.Sender == room.First ? 1 : 2;
                         response = packet with { State = MatchRules.Apply(state, room.Mode, side, packet) };
+                        metrics.RecordApply(Stopwatch.GetElapsedTime(applyStart).TotalMilliseconds);
                     }
                     catch (InvalidOperationException ex)
                     {
                         response = packet with { Type = PacketType.ERROR, State = null, Payload = ex.Message };
                     }
+                    finally { metrics.ExitRequest(); }
                     await GameWire.WriteAsync(stream, response, ct);
                 }
             }

@@ -817,7 +817,7 @@ namespace OnlineChessGame
 
         private void UpdateOnlineClocks()
         {
-            if (onlineState is not { } state) return;
+            if (onlineState is not { } state || GameClient.Instance.IsRecovering) return;
             long now = state.ObservedAt + (long)System.Diagnostics.Stopwatch.GetElapsedTime(clockSampleAt).TotalMilliseconds;
             lblTimerPlayer.Text = TimeSpan.FromSeconds((state.Remaining(isFirstPlayer ? 1 : 2, now) + 999) / 1000).ToString(@"mm\:ss");
             lblTimerOpp.Text = TimeSpan.FromSeconds((state.Remaining(isFirstPlayer ? 2 : 1, now) + 999) / 1000).ToString(@"mm\:ss");
