@@ -3,7 +3,7 @@ using OnlineChessGame.Network;
 namespace OnlineChessGame.ServerManager;
 
 /// <summary>Bounded, sanitized operational events; never retain requests or player profiles.</summary>
-public sealed class AuthMonitor(IAuthService inner) : IAuthService
+public sealed class AuthMonitor(IAuthService inner) : IAuthService, IPlayerProfileReader
 {
     private readonly object gate = new();
     private readonly Queue<string> events = new();
@@ -29,6 +29,10 @@ public sealed class AuthMonitor(IAuthService inner) : IAuthService
             return result;
         }
     }
+
+    public Task<PlayerProfile?> ReadProfileAsync(int userId, CancellationToken ct) =>
+        inner is IPlayerProfileReader reader ? reader.ReadProfileAsync(userId, ct)
+            : throw new InvalidOperationException("Profile reader is not configured.");
 
     public async Task<AuthResponse> HandleAsync(AuthRequest request, CancellationToken ct)
     {

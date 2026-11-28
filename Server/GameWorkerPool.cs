@@ -50,11 +50,25 @@ public sealed class GameWorkerPool : IAsyncDisposable
     private readonly int capacity;
     private readonly int admissionCapacity;
     private Worker[] workers = [];
+    // Logical demand survives worker PID replacement until a room ends.
+    private readonly Dictionary<string, GameRoom> admittedRooms = new();
+    private readonly HashSet<string> openingRooms = new();
+    private readonly HashSet<string> recoveryDemand = new();
     private string? workerAssembly;
     private Task? monitoring;
     private uint next;
 
     public int AdmissionCapacity => admissionCapacity;
+
+    internal void ReserveRecoveryDemand(string roomId)
+    {
+        lock (gate) recoveryDemand.Add(roomId);
+    }
+
+    internal void ReleaseRecoveryDemand(string roomId)
+    {
+        lock (gate) recoveryDemand.Remove(roomId);
+    }
 
     public GameWorkerPool(int capacity = DefaultRoomCapacity, int? admissionCapacity = null)
     {
@@ -192,6 +206,9 @@ public sealed class GameWorkerPool : IAsyncDisposable
     internal async Task<WorkerRoom> OpenRoomAsync(GameRoom room, CancellationToken ct, bool isFailover = false)
     {
         var tried = new HashSet<Worker>();
+        bool opening = false;
+        try
+        {
         while (true)
         {
             ct.ThrowIfCancellationRequested();
@@ -202,8 +219,15 @@ public sealed class GameWorkerPool : IAsyncDisposable
                 if (workers.Length == 0) break;
                 if (!isFailover)
                 {
-                    int totalLoad = workers.Sum(w => w.Current is { } c && !c.Process.HasExited ? Load(c) : 0);
-                    if (totalLoad >= admissionCapacity) break;
+                    foreach (var ended in admittedRooms.Where(entry => entry.Value.Closing ||
+                        entry.Value.State?.Result is not null).Select(entry => entry.Key).ToArray())
+                        admittedRooms.Remove(ended);
+                    if (!admittedRooms.ContainsKey(room.RoomId) && !opening)
+                    {
+                        int demand = admittedRooms.Keys.Concat(openingRooms).Concat(recoveryDemand).Distinct().Count();
+                        if (demand >= admissionCapacity || !openingRooms.Add(room.RoomId)) break;
+                        opening = true;
+                    }
                 }
                 int start = (int)(next++ % (uint)workers.Length);
                 worker = workers.Skip(start).Concat(workers.Take(start))
@@ -237,6 +261,13 @@ public sealed class GameWorkerPool : IAsyncDisposable
                 {
                     lock (gate) instance.Responsive = false;
                 });
+                lock (gate)
+                {
+                    admittedRooms[room.RoomId] = room;
+                    recoveryDemand.Remove(room.RoomId);
+                    if (opening) openingRooms.Remove(room.RoomId);
+                    opening = false;
+                }
                 transferred = true;
                 return reservedRoom;
             }
@@ -256,6 +287,11 @@ public sealed class GameWorkerPool : IAsyncDisposable
             }
         }
         throw new IOException("Game server đang bận hoặc bảo trì. Vui lòng tìm trận lại.");
+        }
+        finally
+        {
+            if (opening) lock (gate) openingRooms.Remove(room.RoomId);
+        }
     }
 
     private void Release(Instance instance)

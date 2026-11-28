@@ -11,6 +11,11 @@ public sealed class GameSessions : IAuthService
     private readonly ConcurrentDictionary<string, (PlayerProfile Player, DateTimeOffset Expires)> loginSessions = new();
     public GameSessions(IAuthService auth) => this.auth = auth;
 
+    public async Task<PlayerProfile> RefreshAsync(PlayerProfile player, CancellationToken ct) =>
+        auth is IPlayerProfileReader reader
+            ? await reader.ReadProfileAsync(player.UserId, ct) ?? throw new IOException("Player no longer exists.")
+            : player;
+
     public async Task<AuthResponse> HandleAsync(AuthRequest request, CancellationToken ct)
     {
         var response = await auth.HandleAsync(request, ct);

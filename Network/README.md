@@ -42,14 +42,14 @@ AuthResponse response = await client.SendAsync(new("login", username, password))
 
 ## Security and protocol
 
-- Gateway defaults to loopback TCP 8888 and passes encrypted bytes to round-robin loopback TLS workers 9001/9002. All ports accept 0 for OS-assigned ports; read actual properties after start.
+- Gateway defaults to all IPv4 interfaces (`0.0.0.0`) TCP 8888 and passes encrypted bytes to round-robin loopback TLS workers 9001/9002. All ports accept 0 for OS-assigned ports; read actual properties after start.
 - Both workers use the same caller-owned certificate. TLS 1.2/1.3 only. Production certificates are provisioned externally; the self-signed generator exists only in tests. On Windows, load PFX with a persisted/user key rather than ephemeral key storage for Schannel.
 - Client pin is exactly 64 hexadecimal characters: SHA-256 of the full DER certificate, NOT SPKI or SHA-1 thumbprint. Obtain through `cert.GetCertHashString(HashAlgorithmName.SHA256)` over a trusted provisioning channel. Pin match is the trust policy (including self-signed deployments); it intentionally replaces PKI hostname/chain trust. Wrong/missing/malformed pins fail closed.
 - Endpoints require DNS/IPv4 `host:port`, or bracketed `[IPv6]:port`; no implicit port or scheme.
 - One request and response per TLS connection. Frames are 4-byte signed positive big-endian lengths followed by UTF-8 `System.Text.Json` JSON, default case-sensitive PascalCase record field names. Maximum payload 16384 bytes. Null/malformed/oversized frames close that connection.
 - Ten-second total connection deadline, bounded 128 active connections per listener with bounded listen backlog. Separate admission budgets prevent gateway connections starving worker acceptance. Invalid peers cannot terminate accept loops.
 - Fallback occurs only when TCP worker connect fails, before forwarding any bytes. No request replay, no retry after TLS/auth failure. This is TCP-connect availability routing, not an independent health-probe service.
-- Cancellation/Stop closes listeners, cancels in-flight network I/O, and awaits tracked handlers. Start is one-shot. Bind address is optional; exposing beyond loopback requires firewall/deployment review.
+- Cancellation/Stop closes listeners, cancels in-flight network I/O, and awaits tracked handlers. Start is one-shot. Bind address is optional; pass `IPAddress.Loopback` for local-only operation. The default exposes the gateway on all IPv4 interfaces and requires firewall/deployment review; workers remain loopback-only.
 
 ## Verified commands (repository root)
 

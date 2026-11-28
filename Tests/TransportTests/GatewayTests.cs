@@ -218,13 +218,16 @@ public sealed class GatewayTests
 
     private static async Task<string> MatchAsync(Stream a, Stream b, string mode, CancellationToken ct)
     {
-        await GameWire.WriteAsync(a, new GamePacket(PacketType.FIND_MATCH, GameMode: mode), ct);
-        await GameWire.WriteAsync(b, new GamePacket(PacketType.FIND_MATCH, GameMode: mode), ct);
+        string aId = Guid.NewGuid().ToString("N"), bId = Guid.NewGuid().ToString("N");
+        await GameWire.WriteAsync(a, new GamePacket(PacketType.FIND_MATCH, GameMode: mode, QueueAttemptId: aId), ct);
+        await GameWire.WriteAsync(b, new GamePacket(PacketType.FIND_MATCH, GameMode: mode, QueueAttemptId: bId), ct);
         var first = await GameWire.ReadAsync<GamePacket>(a, ct);
         var second = await GameWire.ReadAsync<GamePacket>(b, ct);
         Assert.Equal(PacketType.MATCH_FOUND, first?.Type);
         Assert.Equal(PacketType.MATCH_FOUND, second?.Type);
-        Assert.Equal(first!.RoomId, second!.RoomId);
+        Assert.Equal(aId, first!.QueueAttemptId);
+        Assert.Equal(bId, second!.QueueAttemptId);
+        Assert.Equal(first.RoomId, second.RoomId);
         return first.RoomId;
     }
 
@@ -279,11 +282,6 @@ public sealed class GatewayTests
         await MatchAsync(c, d, "CARO", ct);
         Assert.Equal(2, workers.GetSnapshot(0).ReservedRooms + workers.GetSnapshot(1).ReservedRooms);
 
-        await GameWire.WriteAsync(e, new GamePacket(PacketType.FIND_MATCH, GameMode: "CHESS"), ct);
-        await GameWire.WriteAsync(f, new GamePacket(PacketType.FIND_MATCH, GameMode: "CHESS"), ct);
-        Assert.Equal(PacketType.ERROR, (await GameWire.ReadAsync<GamePacket>(e, ct))?.Type);
-        Assert.Equal(PacketType.ERROR, (await GameWire.ReadAsync<GamePacket>(f, ct))?.Type);
-
         await GameWire.WriteAsync(a, new GamePacket(PacketType.MOVE, RoomId: room1, Payload: "e2e4"), ct);
         Assert.Equal("e2e4", (await GameWire.ReadAsync<GamePacket>(b, ct))?.Payload);
         await WaitForAsync(() =>
@@ -293,5 +291,26 @@ public sealed class GatewayTests
             return s0.CpuPercent >= 0 && s1.CpuPercent >= 0 && s0.InFlightRequests == 0 && s1.InFlightRequests == 0 &&
                    s0.Sessions + s1.Sessions == 4;
         }, ct);
+
+        await AssertAdmissionRejectedAsync(e, f, ct);
+
+        // A dead PID must not erase admission demand for its still-active room.
+        int crashedPid = workers.GetSnapshot(0).ProcessId!.Value;
+        using var crashed = Process.GetProcessById(crashedPid);
+        crashed.Kill();
+        await crashed.WaitForExitAsync(ct);
+
+        await AssertAdmissionRejectedAsync(e, f, ct);
+        await WaitForAsync(() => workers.GetSnapshot(0) is { Status: WorkerStatus.Ready, ProcessId: int pid } &&
+            pid != crashedPid, ct);
+        await AssertAdmissionRejectedAsync(e, f, ct);
+    }
+
+    private static async Task AssertAdmissionRejectedAsync(Stream first, Stream second, CancellationToken ct)
+    {
+        await GameWire.WriteAsync(first, new GamePacket(PacketType.FIND_MATCH, GameMode: "CHESS"), ct);
+        await GameWire.WriteAsync(second, new GamePacket(PacketType.FIND_MATCH, GameMode: "CHESS"), ct);
+        Assert.Equal(PacketType.ERROR, (await GameWire.ReadAsync<GamePacket>(first, ct))?.Type);
+        Assert.Equal(PacketType.ERROR, (await GameWire.ReadAsync<GamePacket>(second, ct))?.Type);
     }
 }

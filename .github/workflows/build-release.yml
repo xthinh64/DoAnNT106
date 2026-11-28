@@ -16,7 +16,45 @@ permissions:
   contents: write
 
 jobs:
+  phase3-gate:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Transport, SQL fencing and worker failover release gate
+        shell: pwsh
+        env:
+          MATCH_TEST_MYSQL: 'Server=127.0.0.1;Port=3306;User ID=root;Password=;SslMode=None;Pooling=false'
+        run: ./scripts/phase3/verify.ps1
+      - name: Real TLS and MySQL capacity benchmark
+        shell: pwsh
+        env:
+          MATCH_TEST_MYSQL: 'Server=127.0.0.1;Port=3306;User ID=root;Password=;SslMode=None;Pooling=false'
+        run: ./scripts/phase3/verify.ps1 -Benchmark -NoBuild
+      - name: Save commit-tagged TRX and measured samples, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-evidence-${{ github.sha }}
+          path: artifacts/phase3/
+          if-no-files-found: error
+
   client:
+    needs: phase3-gate
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +70,19 @@ jobs:
       - name: Test Caro engine
         shell: pwsh
         run: dotnet test Tests/CaroTests/CaroTests.csproj --configuration Release
+      - name: Deterministic Windows client recovery smoke (not live TLS or LAN acceptance)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/client-recovery | Out-Null
+          dotnet run --project Tests/ClientRecoverySmoke/ClientRecoverySmoke.csproj --configuration Release 2>&1 | Tee-Object -FilePath artifacts/client-recovery/client-recovery-smoke.log
+          if ($LASTEXITCODE -ne 0) { throw "ClientRecoverySmoke failed with exit code $LASTEXITCODE" }
+      - name: Retain Windows recovery smoke log including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-recovery-smoke-${{ github.sha }}
+          path: artifacts/client-recovery/client-recovery-smoke.log
+          if-no-files-found: error
       - name: Publish self-contained Windows client
         shell: pwsh
         run: dotnet publish Design/OnlineChessGame.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=false --output release/client
@@ -54,6 +105,7 @@ jobs:
           if-no-files-found: error
 
   server:
+    needs: phase3-gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

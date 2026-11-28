@@ -18,6 +18,7 @@ public class ChessApplicationContext : ApplicationContext
         {
             if (MainForm == newForm)
             {
+                GameClient.Instance.Disconnect();
                 ExitThread();
             }
         };

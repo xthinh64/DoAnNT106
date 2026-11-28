@@ -1,4 +1,3 @@
-using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using OnlineChessGame.Auth;
@@ -14,15 +13,15 @@ try
         return 0;
     }
     EnvironmentFile.LoadForServer();
+    var bind = ServerNetworkOptions.ResolveBindAddress(Environment.GetEnvironmentVariable("CHESS_BIND_ADDRESS"));
     string certPath = Required("CHESS_CERT_PATH");
     string certPassword = Required("CHESS_CERT_PASSWORD");
     if (args is ["--create-cert"])
     {
         using var rsa = RSA.Create(3072);
         var request = new CertificateRequest("CN=Chess Auth", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        var san = new SubjectAlternativeNameBuilder();
-        san.AddDnsName("localhost");
-        san.AddIpAddress(IPAddress.Loopback);
+        var san = ServerNetworkOptions.CreateSubjectAlternativeNames(bind,
+            Environment.GetEnvironmentVariable("CHESS_CERT_HOSTS"));
         request.CertificateExtensions.Add(san.Build());
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
         request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, true));
@@ -32,17 +31,17 @@ try
         // CreateNew refuses to overwrite a provisioned identity. Protect this directory with OS ACLs.
         using var output = new FileStream(certPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
         output.Write(created.Export(X509ContentType.Pfx, certPassword));
-        Console.WriteLine("Created a development PFX for localhost / 127.0.0.1.");
+        Console.WriteLine("Created a development PFX with localhost, loopback, concrete bind IP and CHESS_CERT_HOSTS identities.");
         return 0;
     }
     if (args.Length != 0) throw new ArgumentException("Usage: server [--create-cert]");
     using var certificate = new GatewayCertificate(certPath, certPassword);
     string connection = Required("CHESS_DB_CONNECTION");
     bool allowLegacy = string.Equals(Environment.GetEnvironmentVariable("AUTH_ALLOW_LEGACY_MIGRATION"), "true", StringComparison.OrdinalIgnoreCase);
+    await DatabaseReadiness.CheckAsync(connection, allowLegacyMigration: allowLegacy);
     var service = new AuthAdmissionService(new MySqlAuthService(connection, allowLegacyMigration: allowLegacy));
     var sessions = new GameSessions(service);
     // One shared global budget for both workers: max 4 active, burst 20, refill 5/s; no queue.
-    var bind = IPAddress.Parse(Environment.GetEnvironmentVariable("CHESS_BIND_ADDRESS") ?? "127.0.0.1");
     using var stop = new CancellationTokenSource();
     Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
     var configuredCapacity = Environment.GetEnvironmentVariable("CHESS_WORKER_MAX_ROOMS");
@@ -53,12 +52,23 @@ try
     await workers.WaitUntilReadyAsync(stop.Token);
     await using var gateway = new GameServer(bind, certificate.Context, sessions, service, workers,
         matchStore: new MySqlMatchStore(connection));
-    gateway.Start(stop.Token);
+    await gateway.StartAsync(stop.Token);
     Console.WriteLine($"Gateway ready: {bind}:{gateway.Port}; loopback game workers 9001/9002");
 
     try { await Task.Delay(Timeout.Infinite, stop.Token); }
     catch (OperationCanceledException) { }
     return 0;
+}
+catch (DatabaseReadinessException ex)
+{
+    Console.Error.WriteLine(ex.Message);
+    return 1;
+}
+catch (ArgumentException ex) when (ex.ParamName is "bindAddress" or "certificateHosts")
+{
+    // These messages are controlled by ServerNetworkOptions and contain no input values or secrets.
+    Console.Error.WriteLine($"Server startup failed: {ex.Message}");
+    return 1;
 }
 catch (Exception ex) when (ex is ArgumentException or FormatException or OverflowException or InvalidOperationException or IOException or CryptographicException or System.Net.Sockets.SocketException or OperationCanceledException or System.ComponentModel.Win32Exception)
 {

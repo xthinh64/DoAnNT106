@@ -3,8 +3,18 @@ using OnlineChessGame.Network;
 
 namespace OnlineChessGame.Auth;
 
-public sealed class MySqlAuthService(string connectionString, bool allowLegacyMigration = false) : IAuthService
+public sealed class MySqlAuthService(string connectionString, bool allowLegacyMigration = false) : IAuthService, IPlayerProfileReader
 {
+    public async Task<PlayerProfile?> ReadProfileAsync(int userId, CancellationToken ct)
+    {
+        await using var db = new MySqlConnection(connectionString);
+        await db.OpenAsync(ct);
+        await using var command = new MySqlCommand("SELECT u.user_id,u.username,u.display_name,COALESCE(c.elo,1200),COALESCE(r.elo,1200) FROM Users u LEFT JOIN UserGameStats c ON c.user_id=u.user_id AND c.game_type='CHESS' LEFT JOIN UserGameStats r ON r.user_id=u.user_id AND r.game_type='CARO' WHERE u.user_id=@id", db);
+        command.Parameters.AddWithValue("@id", userId);
+        await using var row = await command.ExecuteReaderAsync(ct);
+        return await row.ReadAsync(ct) ? new PlayerProfile(row.GetInt32(0),row.GetString(1),row.IsDBNull(2) ? row.GetString(1) : row.GetString(2),row.GetInt32(3),row.GetInt32(4)) : null;
+    }
+
     private static readonly string DummyHash = PasswordHasher.Hash("dummy-not-an-account-password");
     private static AuthResponse Invalid() => new(false, "invalid_request", "Invalid authentication request.");
     private static AuthResponse Failed() => new(false, "invalid_credentials", "Invalid username or password.");

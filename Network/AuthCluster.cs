@@ -7,7 +7,7 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace OnlineChessGame.Network;
 
-/// <summary>Loopback TCP pass-through gateway and two TLS workers. The caller owns the certificate.</summary>
+/// <summary>Public TCP pass-through gateway and two loopback TLS workers. The caller owns the certificate.</summary>
 public sealed class AuthCluster : IAsyncDisposable
 {
     private readonly IAuthService service;
@@ -37,7 +37,7 @@ public sealed class AuthCluster : IAsyncDisposable
         this.service = service ?? throw new ArgumentNullException(nameof(service));
         this.certificate = certificate ?? throw new ArgumentNullException(nameof(certificate));
         if (!certificate.HasPrivateKey) throw new ArgumentException("Server certificate requires a private key.", nameof(certificate));
-        var bind = bindAddress ?? IPAddress.Loopback;
+        var bind = bindAddress ?? IPAddress.Any;
         gateway = new(bind, gatewayPort);
         worker1 = new(IPAddress.Loopback, worker1Port);
         worker2 = new(IPAddress.Loopback, worker2Port);

@@ -23,12 +23,24 @@ Worker xác nhận nước đi và Gateway lưu trạng thái, kết quả trong
 2. Sao chép `docs/server.env.example` thành `.env` cạnh
    `OnlineChessGame.Server`, rồi thay mật khẩu DB, đường dẫn PFX và mật khẩu PFX.
    `.env` là file riêng của VPS, không đưa lên GitHub hay vào gói tải công khai.
+   Gateway mặc định bind `0.0.0.0` (mọi card IPv4). Có thể đặt `CHESS_BIND_ADDRESS` thành IP cục bộ của card mạng, `::` cho IPv6 hoặc `127.0.0.1` nếu chỉ phục vụ qua proxy/VPN cục bộ. Không bind IP public của router NAT nếu IP đó không thuộc card mạng server.
 3. Dùng tên miền trỏ tới VPS và chứng chỉ từ CA công cộng có SAN khớp tên miền.
    Cấu hình PFX chứa khóa riêng và chứng chỉ trung gian cần thiết. Giữ PFX và
    mật khẩu trên VPS.
 4. Chạy `./OnlineChessGame.Server` và kiểm tra dòng `Gateway ready`. Mở cổng TCP
    gateway (mặc định 8888) trên firewall VPS và nhà cung cấp. Cổng MySQL 3306
    chỉ cần truy cập nội bộ nếu MySQL nằm trên cùng VPS.
+
+## Chạy từ mạng gia đình qua Internet
+
+- Giữ bind `0.0.0.0` hoặc IP LAN của máy server; client dùng tên miền/IP public, không dùng `0.0.0.0`.
+- Chuyển tiếp TCP 8888 trên router tới IP LAN của server và mở đúng cổng trên firewall. Không mở 9001/9002 hay MySQL ra Internet.
+- Nếu nhà mạng dùng CGNAT, port forwarding thông thường không đủ: cần IP public, VPS hoặc VPN có định tuyến phù hợp.
+- Chứng chỉ phải có SAN khớp tên/IP public mà client dùng. PFX cũ chỉ có localhost sẽ không hợp lệ.
+
+## Chứng chỉ tự ký để thử nghiệm bằng server console
+
+Đặt `CHESS_BIND_ADDRESS=0.0.0.0` và `CHESS_CERT_HOSTS=192.168.1.10,chess.example.com` (thay bằng địa chỉ thực), cùng `CHESS_CERT_PATH` và `CHESS_CERT_PASSWORD`, rồi chạy server với `--create-cert`. Danh sách SAN phân cách bằng dấu phẩy, không chứa URL, cổng hoặc địa chỉ wildcard. Cấu hình client tin cậy chứng chỉ công khai qua kênh an toàn theo hướng dẫn LAN; không phân phối PFX/khóa riêng. Tạo lại PFX không tự cập nhật chứng chỉ tin cậy đã phân phối cho client. Internet production nên dùng chứng chỉ CA công cộng.
 
 ## Tạo GitHub Release
 
