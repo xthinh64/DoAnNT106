@@ -21,8 +21,14 @@ public sealed class GameServer : IAsyncDisposable
     private readonly ConcurrentDictionary<TcpClient, Task> connections = new();
     private readonly SemaphoreSlim slots = new(256);
     private readonly CancellationTokenSource _stop = new();
+    private readonly object lifecycleGate = new();
+    private Task? startupTask;
+    private Task? disposalTask;
+    private bool disposing;
+    private CancellationTokenRegistration lifetimeCancellation;
     private Task? _acceptLoop;
     private Task? matchMonitor;
+    private readonly SemaphoreSlim resumeGate = new(1, 1);
 
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
     public int ClientCount => _clients.Count;
@@ -41,23 +47,53 @@ public sealed class GameServer : IAsyncDisposable
     }
 
     public GameServer(IPAddress bindAddress, SslStreamCertificateContext certificate, GameSessions sessions,
-        IAuthService auth, GameWorkerPool workers, int port = 8888, IMatchStore? matchStore = null) : this(bindAddress, certificate, sessions, port)
+        IAuthService auth, GameWorkerPool workers, int port = 8888, IMatchStore? matchStore = null, TimeSpan? reconnectWindow = null) : this(bindAddress, certificate, sessions, port)
     {
         this.auth = auth;
         this.workers = workers;
-        if (matchStore is not null) durable = new DurableMatches(matchStore, workers);
+        if (matchStore is not null) durable = new DurableMatches(matchStore, workers, reconnectWindow);
     }
 
-    public void Start(CancellationToken ct = default)
+    // Compatibility for synchronous callers. Run the entire async operation off the
+    // caller's synchronization context; WinForms callers should await StartAsync.
+    public void Start(CancellationToken ct = default) =>
+        Task.Run(() => StartAsync(ct), CancellationToken.None).GetAwaiter().GetResult();
+
+    // One startup attempt per server; repeated calls share its outcome and the
+    // first caller's lifetime token. Disposal prevents any later startup.
+    public Task StartAsync(CancellationToken ct = default)
     {
-        ct.Register(() => _stop.Cancel());
-        _listener.Start(128);
-        _acceptLoop = Task.Run(() => AcceptLoopAsync(_stop.Token));
-        if (durable is not null)
+        lock (lifecycleGate)
+        {
+            ObjectDisposedException.ThrowIf(disposing, this);
+            return startupTask ??= StartCoreAsync(ct);
+        }
+    }
 
-            durable.RecoverOnStartupAsync(_stop.Token).GetAwaiter().GetResult();
-
-            matchMonitor = Task.Run(() => durable.RunAsync(_roomManager, _stop.Token));
+    private async Task StartCoreAsync(CancellationToken ct)
+    {
+        lifetimeCancellation = ct.Register(() => _stop.Cancel());
+        try
+        {
+            // No game or auth request can race the startup scan. Bound only the
+            // recovery phase, not the lifetime of the successfully started server.
+            using var startup = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+            startup.CancelAfter(TimeSpan.FromSeconds(30));
+            if (durable is not null)
+                await durable.RecoverOnStartupAsync(startup.Token).ConfigureAwait(false);
+            startup.Token.ThrowIfCancellationRequested();
+            _listener.Start(128);
+            _acceptLoop = Task.Run(() => AcceptLoopAsync(_stop.Token));
+            if (durable is not null)
+                matchMonitor = Task.Run(() => durable.RunAsync(_roomManager, _stop.Token));
+        }
+        catch
+        {
+            _stop.Cancel();
+            _listener.Stop();
+            durable?.StopRecovery();
+            throw;
+        }
     }
 
     private async Task AcceptLoopAsync(CancellationToken ct)
@@ -130,12 +166,17 @@ public sealed class GameServer : IAsyncDisposable
                 await GameWire.WriteAsync(tls, new GamePacket(PacketType.ERROR, Payload: "Phiên game không hợp lệ. Đăng nhập lại."), handshake.Token);
                 return;
             }
+            player = await sessions.RefreshAsync(player, handshake.Token);
             session = new ClientSession(tcp, tls) { Username = player.Username, Player = player };
             _clients[session.SessionId] = session;
-            await session.SendAsync(new GamePacket(PacketType.AUTHENTICATED), handshake.Token);
+            await session.SendAsync(new GamePacket(PacketType.AUTHENTICATED, Player: player), handshake.Token);
 
             if (durable is not null)
-                await durable.TryResumePlayerAsync(session, _roomManager, handshake.Token);
+            {
+                await resumeGate.WaitAsync(ct);
+                try { await durable.TryResumePlayerAsync(session, _roomManager, ct); }
+                finally { resumeGate.Release(); }
+            }
 
             using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
             lifetime.CancelAfter(TimeSpan.FromHours(8));
@@ -157,9 +198,10 @@ public sealed class GameServer : IAsyncDisposable
             if (session is not null)
             {
                 _clients.TryRemove(session.SessionId, out _);
-                if (durable is not null && _roomManager.GetRoom(session.CurrentRoomId) is { } room)
-                    await durable.AbandonAsync(room);
-                await _roomManager.RemoveClientAsync(session, notifyOpponent: true);
+                if (durable is not null && !_stop.IsCancellationRequested)
+                    await durable.DisconnectAsync(session, _roomManager, _stop.Token);
+                else if (durable is null)
+                    await _roomManager.RemoveClientAsync(session, notifyOpponent: true);
             }
             tcp.Dispose();
         }
@@ -172,9 +214,10 @@ public sealed class GameServer : IAsyncDisposable
             case PacketType.FIND_MATCH:
                 {
                     if (!string.IsNullOrEmpty(session.CurrentRoomId) || packet.GameMode is not ("CHESS" or "CARO")) return;
+                    session.Player = await sessions.RefreshAsync(session.Player!, ct);
                     session.Elo = packet.GameMode == "CARO" ? session.Player!.CaroElo : session.Player!.ChessElo;
 
-                    var room = _roomManager.EnqueueOrMatch(session, packet.GameMode, distinctAccounts: durable is not null);
+                    var room = _roomManager.EnqueueOrMatch(session, packet.GameMode, distinctAccounts: durable is not null, queueAttemptId: packet.QueueAttemptId);
                     if (room is not null)
                     {
                         if (workers is not null)
@@ -215,7 +258,7 @@ public sealed class GameServer : IAsyncDisposable
                             Sender: room.Player2.Username,
                             RoomId: room.RoomId,
                             GameMode: room.GameMode,
-                            Payload: $"FIRST|{room.Player2.Elo}", State: room.State
+                            Payload: $"FIRST|{room.Player2.Elo}", State: room.State, QueueAttemptId: room.Player1QueueAttemptId
                         ), ct);
 
                         await room.Player2.SendAsync(new GamePacket(
@@ -223,7 +266,7 @@ public sealed class GameServer : IAsyncDisposable
                             Sender: room.Player1.Username,
                             RoomId: room.RoomId,
                             GameMode: room.GameMode,
-                            Payload: $"SECOND|{room.Player1.Elo}", State: room.State
+                            Payload: $"SECOND|{room.Player1.Elo}", State: room.State, QueueAttemptId: room.Player2QueueAttemptId
                         ), ct);
                         room.MarkReady();
                     }
@@ -277,10 +320,14 @@ public sealed class GameServer : IAsyncDisposable
 
             case PacketType.LEAVE_ROOM:
                 {
+                    if (durable is not null && packet.RoomId == session.CurrentRoomId &&
+                        await durable.LeavePendingAsync(session, _roomManager, ct)) return;
                     if (durable is not null && _roomManager.GetRoom(session.CurrentRoomId) is { } room)
                     {
-                        if (packet.RoomId != room.RoomId) return;
-                        await durable.AbandonAsync(room);
+                        if (packet.RoomId != room.RoomId ||
+                            (!ReferenceEquals(room.Player1, session) && !ReferenceEquals(room.Player2, session))) return;
+                        await durable.LeaveAsync(room, session, _roomManager, ct);
+                        return;
                     }
                     await _roomManager.RemoveClientAsync(session, notifyOpponent: true);
                     break;
@@ -288,15 +335,34 @@ public sealed class GameServer : IAsyncDisposable
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
+    {
+        lock (lifecycleGate)
+        {
+            disposing = true;
+            return new ValueTask(disposalTask ??= DisposeCoreAsync());
+        }
+    }
+
+    private async Task DisposeCoreAsync()
     {
         _stop.Cancel();
+        // Startup owns recovery cleanup and may still use _stop in its catch.
+        // Observe its failure here; StartAsync remains responsible for reporting it.
+        if (startupTask is not null)
+        {
+            try { await startupTask.ConfigureAwait(false); }
+            catch { }
+        }
         _listener.Stop();
         if (_acceptLoop is not null)
             await _acceptLoop;
         foreach (var tcp in connections.Keys) tcp.Dispose();
         await Task.WhenAll(connections.Values);
         if (matchMonitor is not null) await matchMonitor;
+        durable?.StopRecovery();
+        foreach (var room in _roomManager.ActiveRooms()) room.Close();
+        lifetimeCancellation.Dispose();
         _stop.Dispose();
     }
 }

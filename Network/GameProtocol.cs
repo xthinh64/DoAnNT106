@@ -30,18 +30,38 @@ public sealed record GamePacket(
     string GameMode = "CHESS", // "CHESS" hoặc "CARO"
     string Payload = "",
     long? ExpectedRevision = null,
-    MatchState? State = null
+    MatchState? State = null,
+    string? QueueAttemptId = null,
+    PlayerProfile? Player = null
 );
 
 public sealed record MatchState(long Generation, long Revision, string Moves, int Turn,
     long FirstMilliseconds, long SecondMilliseconds, long TurnStartedAt, long ObservedAt,
-    string? Result = null, string? Reason = null, int DrawOfferedBy = 0)
+    string? Result = null, string? Reason = null, int DrawOfferedBy = 0, RatingSettlement? Rating = null)
 {
     public const int MaxMoves = 1024;
 
     public long Remaining(int side, long now) =>
         Math.Max(0, (side == 1 ? FirstMilliseconds : SecondMilliseconds) -
             (Result is null && Turn == side ? Math.Max(0, now - TurnStartedAt) : 0));
+}
+
+public sealed record RatingSettlement(string Policy, string GameType, int FirstUserId, int SecondUserId,
+    int FirstBefore, int SecondBefore, int Delta)
+{
+    public int FirstAfter => FirstBefore + Delta;
+    public int SecondAfter => SecondBefore - Delta;
+    public PlayerProfile Apply(PlayerProfile player)
+    {
+        if (player.UserId != FirstUserId && player.UserId != SecondUserId) return player;
+        int elo = player.UserId == FirstUserId ? FirstAfter : SecondAfter;
+        return GameType switch
+        {
+            "CHESS" => player with { ChessElo = elo },
+            "CARO" => player with { CaroElo = elo },
+            _ => player
+        };
+    }
 }
 
 public static class GameWire

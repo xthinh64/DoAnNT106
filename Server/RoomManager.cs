@@ -12,7 +12,7 @@ public sealed class ClientSession
     public string CurrentRoomId { get; set; } = string.Empty;
     public TcpClient Tcp { get; }
     public Stream Stream { get; }
-    public PlayerProfile? Player { get; init; }
+    public PlayerProfile? Player { get; set; }
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     public ClientSession(TcpClient tcp, Stream stream)
@@ -58,6 +58,7 @@ public sealed class GameRoom
     internal bool Recovering { get; set; }
     internal long? RecoveryStartedAt { get; set; }
     internal bool Closing { get; set; }
+    internal bool IsClosed { get { lock (workerGate) return closed; } }
     internal WorkerRoom? Worker { get { lock (workerGate) return worker; } }
     internal Task<bool> WaitUntilReadyAsync(CancellationToken ct) => ready.Task.WaitAsync(ct);
     internal bool IsReady => ready.Task.IsCompletedSuccessfully && ready.Task.Result;
@@ -88,6 +89,7 @@ public sealed class GameRoom
         lock (workerGate)
         {
             closed = true;
+            Closing = true;
             ready.TrySetResult(false);
             worker?.Dispose();
             worker = null;
@@ -96,8 +98,10 @@ public sealed class GameRoom
 
     public required string RoomId { get; init; }
     public required string GameMode { get; init; }
-    public required ClientSession Player1 { get; init; } // Đi trước (Trắng / X)
-    public required ClientSession Player2 { get; init; } // Đi sau (Đen / O)
+    public required ClientSession Player1 { get; set; } // Đi trước (Trắng / X)
+    public required ClientSession Player2 { get; set; } // Đi sau (Đen / O)
+    public string? Player1QueueAttemptId { get; init; }
+    public string? Player2QueueAttemptId { get; init; }
 
     public ClientSession GetOpponent(ClientSession me) =>
         me.SessionId == Player1.SessionId ? Player2 : Player1;
@@ -106,13 +110,13 @@ public sealed class GameRoom
 public sealed class RoomManager
 {
     private readonly ConcurrentDictionary<string, GameRoom> _rooms = new();
-    private readonly List<(ClientSession Session, string GameMode)> _waitingQueue = new();
+    private readonly List<(ClientSession Session, string GameMode, string? QueueAttemptId)> _waitingQueue = new();
     private readonly object _queueLock = new();
 
     /// <summary>
     /// Đưa người chơi vào hàng chờ; nếu đã có người chờ cùng chế độ chơi thì ghép thành 1 phòng ngay.
     /// </summary>
-    public GameRoom? EnqueueOrMatch(ClientSession player, string gameMode, bool distinctAccounts = false)
+    public GameRoom? EnqueueOrMatch(ClientSession player, string gameMode, bool distinctAccounts = false, string? queueAttemptId = null)
     {
         string mode = string.IsNullOrWhiteSpace(gameMode) ? "CHESS" : gameMode.ToUpperInvariant();
 
@@ -124,7 +128,8 @@ public sealed class RoomManager
                 (!distinctAccounts || x.Session.Player?.UserId != player.Player?.UserId));
             if (idx >= 0)
             {
-                var opponent = _waitingQueue[idx].Session;
+                var waiting = _waitingQueue[idx];
+                var opponent = waiting.Session;
                 _waitingQueue.RemoveAt(idx);
 
                 string roomId = Guid.NewGuid().ToString("N");
@@ -133,7 +138,9 @@ public sealed class RoomManager
                     RoomId = roomId,
                     GameMode = mode,
                     Player1 = opponent,
-                    Player2 = player
+                    Player2 = player,
+                    Player1QueueAttemptId = waiting.QueueAttemptId,
+                    Player2QueueAttemptId = queueAttemptId
                 };
 
                 opponent.CurrentRoomId = roomId;
@@ -142,7 +149,7 @@ public sealed class RoomManager
                 return room;
             }
 
-            _waitingQueue.Add((player, mode));
+            _waitingQueue.Add((player, mode, queueAttemptId));
             return null;
         }
     }
@@ -168,6 +175,8 @@ public sealed class RoomManager
             if (string.IsNullOrEmpty(client.CurrentRoomId)) return;
             string id = client.CurrentRoomId;
             client.CurrentRoomId = string.Empty;
+            if (!_rooms.TryGetValue(id, out room) ||
+                (!ReferenceEquals(room.Player1, client) && !ReferenceEquals(room.Player2, client))) return;
             if (!_rooms.TryRemove(id, out room)) return;
             room.Close();
             opponent = room.GetOpponent(client);
@@ -181,6 +190,12 @@ public sealed class RoomManager
                 GameMode: room.GameMode,
                 Payload: $"{client.Username} đã rời khỏi trận đấu."
             ));
+    }
+
+    internal void RemoveClosedRoom(GameRoom room)
+    {
+        room.Close();
+        _rooms.TryRemove(new KeyValuePair<string, GameRoom>(room.RoomId, room));
     }
 
     internal GameRoom[] ActiveRooms() => _rooms.Values.ToArray();

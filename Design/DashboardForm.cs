@@ -9,6 +9,11 @@ namespace OnlineChessGame
         private int elo = 1200;
         private int caroElo = 1200;
         private string? queuedMode;
+        private long queueEpoch;
+        private string? queueAttemptId;
+        private readonly CancellationTokenSource lifetime = new();
+        private bool openingBoard;
+        private bool detached;
         private readonly System.Windows.Forms.Timer queueTimer = new() { Interval = 1000 };
         private DateTime queueStarted;
         // === EVENT: Network Hooks sẵn sàng nối Socket TCP ===
@@ -22,10 +27,14 @@ namespace OnlineChessGame
         public DashboardForm()
         {
             InitializeComponent();
+            Activated += (_, _) => UpdatePlayerInfo();
+            lblGuideBody.Text = "Elo nội bộ riêng cho Cờ vua / Caro: khởi tạo 1200, K=32. Không phải xếp hạng FIDE/RIF. Ván online hoàn tất được lưu; ván hủy và chơi máy không tính điểm.";
             queueTimer.Tick += (_, _) => lblQueueTimer.Text = $"Thời gian chờ: {(DateTime.UtcNow - queueStarted):mm\\:ss}";
             GameClient.Instance.OnMatchFound += MatchFound;
             GameClient.Instance.OnDisconnected += GameDisconnected;
             GameClient.Instance.OnMatchUnavailable += MatchUnavailable;
+            GameClient.Instance.OnRecoveryFailed += RecoveryFailed;
+            Shown += async (_, _) => await ResumeSessionAsync();
             Disposed += (_, _) => DetachNetwork();
             ApplyCurrentTheme();
         }
@@ -47,6 +56,8 @@ namespace OnlineChessGame
 
         private void UpdatePlayerInfo()
         {
+            elo = AuthConnection.Player?.ChessElo ?? elo;
+            caroElo = AuthConnection.Player?.CaroElo ?? caroElo;
             string initial = string.IsNullOrEmpty(playerName) ? "P" : playerName[..1].ToUpper();
             lblAvatar.Text = initial;
             lblName.Text = playerName;
@@ -130,7 +141,7 @@ namespace OnlineChessGame
 
         private void BtnLogout_Click(object? sender, EventArgs e)
         {
-            _ = CancelMatchAsync();
+            lifetime.Cancel();
             GameClient.Instance.Disconnect();
             AuthConnection.SessionToken = null;
             AuthConnection.Player = null;
@@ -172,6 +183,9 @@ namespace OnlineChessGame
         private async Task FindMatchAsync(string gameType)
         {
             if (queuedMode is not null) return;
+            long attempt = ++queueEpoch;
+            string requestId = Guid.NewGuid().ToString("N");
+            queueAttemptId = requestId;
             queuedMode = gameType;
             cardGuide.Visible = false;
             btnSoloChess.Enabled = btnSoloCaro.Enabled = false;
@@ -183,15 +197,15 @@ namespace OnlineChessGame
             queueTimer.Start();
             try
             {
-                await GameClient.Instance.ConnectAsync(AuthConnection.Player?.Username ?? playerName);
-                if (queuedMode != gameType) return;
+                await GameClient.Instance.ConnectAsync(AuthConnection.Player?.Username ?? playerName, lifetime.Token);
+                if (IsDisposed || lifetime.IsCancellationRequested || attempt != queueEpoch || queuedMode != gameType || !string.IsNullOrEmpty(GameClient.Instance.CurrentRoomId)) return;
                 await GameClient.Instance.SendAsync(new GamePacket(PacketType.FIND_MATCH, GameMode: gameType,
-                    Payload: (gameType == "CARO" ? caroElo : elo).ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                    Payload: (gameType == "CARO" ? caroElo : elo).ToString(System.Globalization.CultureInfo.InvariantCulture), QueueAttemptId: requestId));
                 OnRankedQueueRequested?.Invoke(gameType);
             }
             catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or InvalidOperationException or ArgumentException or TimeoutException or System.Security.Authentication.AuthenticationException or OperationCanceledException)
             {
-                if (IsDisposed) return;
+                if (IsDisposed || lifetime.IsCancellationRequested || attempt != queueEpoch) return;
                 ResetQueue();
                 MessageBox.Show($"Không kết nối được gateway {AuthConnection.Endpoint}: {ex.Message}",
                     "Lỗi tìm trận", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -211,7 +225,9 @@ namespace OnlineChessGame
 
         private void ResetQueue()
         {
+            ++queueEpoch;
             queuedMode = null;
+            queueAttemptId = null;
             queueTimer.Stop();
             queuePanel.Visible = false;
             cardGuide.Visible = true;
@@ -222,14 +238,22 @@ namespace OnlineChessGame
         private void MatchFound(string roomId, string opponent, int opponentElo, bool isFirst, string gameMode)
         {
             if (!IsHandleCreated || IsDisposed) return;
+            long connectionVersion = GameClient.Instance.ConnectionVersion;
+            long attempt = queueEpoch;
+            bool resumed = GameClient.Instance.IsResumedMatch;
+            string? matchedAttemptId = GameClient.Instance.MatchQueueAttemptId;
             BeginInvoke(() =>
             {
-                if (IsDisposed) return;
-                if (queuedMode != gameMode)
+                if (IsDisposed || lifetime.IsCancellationRequested || openingBoard ||
+                    GameClient.Instance.CurrentRoomId != roomId || connectionVersion != GameClient.Instance.ConnectionVersion) return;
+                if (gameMode is not ("CHESS" or "CARO")) return;
+                if (!resumed && (queuedMode != gameMode || attempt != queueEpoch ||
+                    queueAttemptId is null || matchedAttemptId != queueAttemptId))
                 {
-                    _ = LeaveUnexpectedMatchAsync(roomId);
+                    _ = GameClient.Instance.LeaveRoomAsync();
                     return;
                 }
+                openingBoard = true;
                 ResetQueue();
                 int myElo = gameMode == "CARO" ? caroElo : elo;
                 Form board = gameMode == "CHESS"
@@ -239,31 +263,58 @@ namespace OnlineChessGame
             });
         }
 
-        private static async Task LeaveUnexpectedMatchAsync(string roomId)
+        private async Task ResumeSessionAsync()
         {
-            try { await GameClient.Instance.SendAsync(new GamePacket(PacketType.LEAVE_ROOM, RoomId: roomId)); }
-            catch (IOException) { GameClient.Instance.Disconnect(); }
-            GameClient.Instance.CurrentRoomId = string.Empty;
+            if (AuthConnection.SessionToken is null) return;
+            try
+            {
+                await GameClient.Instance.ConnectAsync(AuthConnection.Player?.Username ?? playerName, lifetime.Token);
+            }
+            catch (OperationCanceledException) { }
+            catch (InvalidOperationException) { RecoveryFailed("Phiên đã hết hạn. Vui lòng đăng nhập lại."); }
+            catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or ArgumentException or System.Security.Authentication.AuthenticationException)
+            {
+                if (!IsDisposed) lblGuideBody.Text = "Chưa kết nối được máy chủ. Chọn tìm trận để thử lại.";
+            }
+        }
+
+        private void RecoveryFailed(string message)
+        {
+            if (!IsHandleCreated || IsDisposed) return;
+            long connectionVersion = GameClient.Instance.ConnectionVersion;
+            BeginInvoke(() =>
+            {
+                if (connectionVersion != GameClient.Instance.ConnectionVersion || IsDisposed || lifetime.IsCancellationRequested) return;
+                GameClient.Instance.Disconnect();
+                AuthConnection.SessionToken = null;
+                AuthConnection.Player = null;
+                Program.Context.SwitchTo(new LoginForm("", message));
+            });
         }
 
         private void GameDisconnected()
         {
             if (!IsHandleCreated || IsDisposed) return;
+            long connectionVersion = GameClient.Instance.ConnectionVersion;
+            long attempt = queueEpoch;
             BeginInvoke(() =>
             {
-                if (IsDisposed || queuedMode is null) return;
+                if (IsDisposed || lifetime.IsCancellationRequested || openingBoard ||
+                    connectionVersion != GameClient.Instance.ConnectionVersion || attempt != queueEpoch) return;
                 ResetQueue();
-                MessageBox.Show("Mất kết nối game server. Vui lòng tìm trận lại.", "Mất kết nối",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                lblGuideBody.Text = "Mất kết nối. Đang kết nối lại và khôi phục ván (tối đa 90 giây)…";
             });
         }
 
         private void MatchUnavailable(string message)
         {
             if (!IsHandleCreated || IsDisposed) return;
+            long connectionVersion = GameClient.Instance.ConnectionVersion;
+            long attempt = queueEpoch;
             BeginInvoke(() =>
             {
-                if (IsDisposed || queuedMode is null) return;
+                if (IsDisposed || lifetime.IsCancellationRequested || openingBoard ||
+                    connectionVersion != GameClient.Instance.ConnectionVersion || attempt != queueEpoch || queuedMode is null) return;
                 ResetQueue();
                 MessageBox.Show(message, "Chưa tìm được trận", MessageBoxButtons.OK, MessageBoxIcon.Information);
             });
@@ -277,6 +328,10 @@ namespace OnlineChessGame
 
         private void DetachNetwork()
         {
+            if (detached) return;
+            detached = true;
+            lifetime.Cancel();
+            GameClient.Instance.OnRecoveryFailed -= RecoveryFailed;
             GameClient.Instance.OnMatchFound -= MatchFound;
             GameClient.Instance.OnDisconnected -= GameDisconnected;
             GameClient.Instance.OnMatchUnavailable -= MatchUnavailable;

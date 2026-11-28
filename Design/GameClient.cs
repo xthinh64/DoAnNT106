@@ -11,10 +11,20 @@ public sealed class GameClient
     private TcpClient? _tcp;
     private SslStream? _stream;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly SemaphoreSlim _connectLock = new(1, 1);
+    private CancellationTokenSource _lifetime = new();
+    private Task? _reconnectTask;
+    public long ConnectionVersion { get; private set; }
+    private string? authenticatedSession;
+    private string? abandonedRoomId;
+    public bool IsConnected => _stream is not null && _tcp is { Connected: true };
+    public event Action<string>? OnRecoveryFailed;
 
     public string CurrentUsername { get; private set; } = string.Empty;
     public string CurrentRoomId { get; set; } = string.Empty;
     public MatchState? CurrentMatchState { get; private set; }
+    public bool IsResumedMatch { get; private set; }
+    public string? MatchQueueAttemptId { get; private set; }
     public bool IsRecovering { get; private set; }
     public int MatchSide { get; private set; }
 
@@ -30,36 +40,93 @@ public sealed class GameClient
     public event Action<MatchState, string>? OnMatchState;
     public event Action? OnRecovering;
 
-    public async Task ConnectAsync(string username)
+    public async Task ConnectAsync(string username, CancellationToken ct = default)
     {
-        CurrentUsername = string.IsNullOrWhiteSpace(username) ? "Player" : username;
-        if (_tcp is { Connected: true } && _stream is not null) return;
-
-        Disconnect();
-        var tcp = new TcpClient();
-        _tcp = tcp;
-        SslStream? tls = null;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+        ct = linked.Token;
+        await _connectLock.WaitAsync(ct);
         try
         {
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            var gateway = AuthConnection.CreateClient();
-            string session = AuthConnection.SessionToken ?? throw new InvalidOperationException("Vui lòng đăng nhập lại để mở phiên game.");
-            var ticket = await gateway.RequestTicketAsync(session, deadline.Token);
-            if (ticket.Token is null) throw new InvalidOperationException("Phiên game hết hạn. Vui lòng đăng nhập lại.");
-            tls = await gateway.ConnectAsync(tcp, deadline.Token);
-            await GameWire.WriteAsync(tls, new GatewayRequest(GatewayRequest.CurrentVersion, "game", Token: ticket.Token), deadline.Token);
-            var reply = await GameWire.ReadAsync<GamePacket>(tls, deadline.Token);
-            if (reply?.Type != PacketType.AUTHENTICATED)
-                throw new InvalidOperationException("Phiên game hết hạn. Vui lòng đăng nhập lại.");
-            if (!ReferenceEquals(tcp, _tcp)) throw new OperationCanceledException();
-            _stream = tls;
-            _ = Task.Run(() => ListenLoopAsync(tcp, tls));
+            ct.ThrowIfCancellationRequested();
+            if (IsConnected && authenticatedSession == AuthConnection.SessionToken) return;
+            if (authenticatedSession != AuthConnection.SessionToken)
+            {
+                abandonedRoomId = null;
+                CurrentRoomId = string.Empty;
+                CurrentMatchState = null;
+            }
+            CloseTransport();
+            CurrentUsername = string.IsNullOrWhiteSpace(username) ? "Player" : username;
+            var tcp = new TcpClient();
+            _tcp = tcp;
+            SslStream? tls = null;
+            try
+            {
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                deadline.CancelAfter(TimeSpan.FromSeconds(10));
+                var gateway = AuthConnection.CreateClient();
+                string session = AuthConnection.SessionToken ?? throw new InvalidOperationException("Vui lòng đăng nhập lại.");
+                var ticket = await gateway.RequestTicketAsync(session, deadline.Token);
+                if (ticket.Token is null) throw new InvalidOperationException("Phiên game hết hạn. Vui lòng đăng nhập lại.");
+                tls = await gateway.ConnectAsync(tcp, deadline.Token);
+                await GameWire.WriteAsync(tls, new GatewayRequest(GatewayRequest.CurrentVersion, "game", Token: ticket.Token), deadline.Token);
+                var reply = await GameWire.ReadAsync<GamePacket>(tls, deadline.Token);
+                if (reply?.Type != PacketType.AUTHENTICATED)
+                    throw new InvalidOperationException("Phiên game hết hạn. Vui lòng đăng nhập lại.");
+                ct.ThrowIfCancellationRequested();
+                if (!ReferenceEquals(tcp, _tcp) || AuthConnection.SessionToken != session) throw new OperationCanceledException();
+                if (reply.Player is { } refreshed && AuthConnection.Player?.UserId == refreshed.UserId)
+                    AuthConnection.Player = refreshed;
+                authenticatedSession = session;
+                _stream = tls;
+                _ = Task.Run(() => ListenLoopAsync(tcp, tls));
+            }
+            catch
+            {
+                tls?.Dispose();
+                tcp.Dispose();
+                if (ReferenceEquals(tcp, _tcp)) CloseTransport();
+                throw;
+            }
         }
-        catch
+        finally { _connectLock.Release(); }
+    }
+
+    private void StartReconnect()
+    {
+        if (_reconnectTask is { IsCompleted: false }) return;
+        var token = _lifetime.Token;
+        _reconnectTask = Task.Run(() => ReconnectAsync(token));
+    }
+
+    private async Task ReconnectAsync(CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(90));
+        var retry = deadline.Token;
+        try
         {
-            tls?.Dispose();
-            if (ReferenceEquals(tcp, _tcp)) Disconnect();
-            throw;
+            while (true)
+            {
+                retry.ThrowIfCancellationRequested();
+                try
+                {
+                    await ConnectAsync(CurrentUsername, retry);
+                    // AUTHENTICATED alone does not prove that a retained room resumed.
+                    while (IsConnected && IsRecovering) await Task.Delay(250, retry);
+                    if (IsConnected) return;
+                }
+                catch (Exception ex) when (ex is IOException or SocketException or TimeoutException or OperationCanceledException) { }
+                await Task.Delay(1000, retry);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or ArgumentException or System.Security.Authentication.AuthenticationException)
+        {
+            if (ct.IsCancellationRequested) return;
+            CloseTransport();
+            IsRecovering = false;
+            OnRecoveryFailed?.Invoke("Không thể khôi phục phiên. Vui lòng đăng nhập lại (thời hạn 90 giây).");
         }
     }
 
@@ -70,7 +137,10 @@ public sealed class GameClient
             while (ReferenceEquals(_tcp, tcp))
             {
                 var packet = await GameWire.ReadAsync<GamePacket>(stream);
+                if (!ReferenceEquals(_tcp, tcp)) break;
                 if (packet is null) break;
+                if (packet.Type is not (PacketType.MATCH_FOUND or PacketType.ERROR or PacketType.AUTHENTICATED) &&
+                    packet.RoomId != CurrentRoomId) continue;
 
                 switch (packet.Type)
                 {
@@ -83,14 +153,23 @@ public sealed class GameClient
                         return;
                     case PacketType.MATCH_FOUND:
                         {
+                            if (packet.RoomId == abandonedRoomId)
+                            {
+                                await SendAsync(new GamePacket(PacketType.LEAVE_ROOM, RoomId: packet.RoomId));
+                                abandonedRoomId = null;
+                                break;
+                            }
                             CurrentRoomId = packet.RoomId;
+                            MatchQueueAttemptId = packet.QueueAttemptId;
                             var parts = packet.Payload.Split('|');
+                            IsResumedMatch = parts.Length > 2 && parts[2] == "RESUME";
                             bool isFirst = parts.Length > 0 && parts[0] == "FIRST";
                             MatchSide = isFirst ? 1 : 2;
                             CurrentMatchState = packet.State;
                             IsRecovering = false;
                             int oppElo = parts.Length > 1 && int.TryParse(parts[1], out int e) ? e : 1200;
                             OnMatchFound?.Invoke(packet.RoomId, packet.Sender, oppElo, isFirst, packet.GameMode);
+                            if (packet.State is { } restored) OnMatchState?.Invoke(restored, "");
                             break;
                         }
                     case PacketType.RECOVERING when packet.RoomId == CurrentRoomId:
@@ -103,6 +182,8 @@ public sealed class GameClient
                         if (previous is not null && (state.Generation < previous.Generation || state.Revision < previous.Revision)) break;
                         CurrentMatchState = state;
                         IsRecovering = false;
+                        if (state.Rating is { } rating && AuthConnection.Player is { } player)
+                            AuthConnection.Player = rating.Apply(player);
                         OnMatchState?.Invoke(state, packet.Payload);
                         if (state.DrawOfferedBy != 0 && state.DrawOfferedBy != MatchSide && state.DrawOfferedBy != previous?.DrawOfferedBy)
                             OnDrawRequestReceived?.Invoke("");
@@ -138,23 +219,55 @@ public sealed class GameClient
         {
             if (ReferenceEquals(_tcp, tcp))
             {
-                Disconnect();
+                CloseTransport();
+                IsRecovering = !string.IsNullOrEmpty(CurrentRoomId);
                 OnDisconnected?.Invoke();
+                StartReconnect();
             }
         }
     }
 
     public void Disconnect()
     {
+        _lifetime.Cancel();
+        _lifetime = new CancellationTokenSource();
+        _reconnectTask = null;
+        CloseTransport();
+        CurrentRoomId = string.Empty;
+        CurrentMatchState = null;
+        IsResumedMatch = false;
+        IsRecovering = false;
+    }
+
+    public async Task LeaveRoomAsync()
+    {
+        string room = CurrentRoomId;
+        if (!string.IsNullOrEmpty(room)) abandonedRoomId = room;
+        _lifetime.Cancel();
+        _lifetime = new CancellationTokenSource();
+        _reconnectTask = null;
+        ConnectionVersion++;
+        CurrentRoomId = string.Empty;
+        CurrentMatchState = null;
+        IsResumedMatch = false;
+        IsRecovering = false;
+        try
+        {
+            if (!string.IsNullOrEmpty(room) && IsConnected)
+                await SendAsync(new GamePacket(PacketType.LEAVE_ROOM, RoomId: room)).WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        catch (Exception ex) when (ex is IOException or TimeoutException) { CloseTransport(); }
+    }
+
+    private void CloseTransport()
+    {
+        ConnectionVersion++;
         var tcp = _tcp;
         var stream = _stream;
         _stream = null;
         _tcp = null;
         stream?.Dispose();
         tcp?.Dispose();
-        CurrentRoomId = string.Empty;
-        CurrentMatchState = null;
-        IsRecovering = false;
     }
 
     public async Task SendAsync(GamePacket packet)
@@ -172,6 +285,7 @@ public sealed class GameClient
         await _sendLock.WaitAsync();
         try
         {
+            if (!ReferenceEquals(stream, _stream)) throw new IOException("Kết nối game đã thay đổi.");
             await GameWire.WriteAsync(stream, outbound);
         }
         catch (ObjectDisposedException exception)

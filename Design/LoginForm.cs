@@ -124,6 +124,7 @@ namespace OnlineChessGame
                 txtPass.Clear();
                 if (result.Success && result.Player is { } player)
                 {
+                    GameClient.Instance.Disconnect();
                     AuthConnection.Player = player;
                     AuthConnection.SessionToken = result.SessionToken;
                     Program.Context.SwitchTo(new DashboardForm(player.Username, player.ChessElo));

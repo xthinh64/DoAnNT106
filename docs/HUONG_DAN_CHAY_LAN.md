@@ -12,7 +12,7 @@ Trong toàn bộ hướng dẫn, thay `192.168.1.10` bằng IPv4 thực tế c�
 
 ## 1. Máy A chuẩn bị MySQL
 
-Nếu ServerManager đã báo **MySQL: schema auth và trận sẵn sàng** và tài khoản server đã có quyền ghi `OnlineMatches`, có thể chuyển sang bước 2.
+Chỉ chuyển sang bước 2 sau khi đã áp dụng migration Elo và nâng quyền `UPDATE` cho `UserGameStats` theo [quy trình nâng cấp](ELO_POLICY_AND_VERIFICATION.md#persistence-and-deployment). Startup kiểm tra schema, InnoDB, unique key, counters và quyền thực tế bằng truy vấn chỉ đọc/EXPLAIN; không tự sửa database.
 
 1. Cài và khởi động **MySQL Server** trên máy A. MySQL Workbench là giao diện thực thi SQL.
 2. Trong Workbench, kết nối bằng tài khoản quản trị. Với database mới, chạy [onlinedb/game_auth.sql](../onlinedb/game_auth.sql) trước. Sau đó chạy [onlinedb/online_matches.sql](../onlinedb/online_matches.sql) để tạo bảng lưu trận. Với database đang dùng, chỉ cần chạy migration mới.
@@ -24,7 +24,7 @@ CREATE USER 'chess_auth'@'127.0.0.1' IDENTIFIED BY 'THAY_BANG_MAT_KHAU_DB';
 GRANT SELECT, INSERT ON onlinechessdb.Users
 TO 'chess_auth'@'127.0.0.1';
 
-GRANT SELECT, INSERT ON onlinechessdb.UserGameStats
+GRANT SELECT, INSERT, UPDATE ON onlinechessdb.UserGameStats
 TO 'chess_auth'@'127.0.0.1';
 
 GRANT SELECT, INSERT, UPDATE ON onlinechessdb.OnlineMatches
@@ -65,7 +65,8 @@ Trong tab **Cấu hình**, nhập:
 
 | Trường | Giá trị |
 | --- | --- |
-| IP gateway | IPv4 LAN máy A, ví dụ `192.168.1.10` |
+| IP gateway | `0.0.0.0` (mặc định, mọi card IPv4) hoặc IPv4 LAN máy A, ví dụ `192.168.1.10` |
+| Tên/IP chứng chỉ | IP/tên mà client kết nối, ví dụ `192.168.1.10`; nhiều giá trị phân cách bằng dấu phẩy |
 | Gateway / Worker 1 / Worker 2 | `8888` / `9001` / `9002` |
 | Số phòng tối đa / worker | Mặc định `32` |
 | Chuỗi kết nối MySQL | Theo mẫu bên dưới |
@@ -77,8 +78,8 @@ Server=127.0.0.1;Port=3306;Database=onlinechessdb;User ID=chess_auth;Password=TH
 
 `SslMode=None` trong mẫu dành cho MySQL cục bộ trên loopback. Kết nối client–Gateway vẫn dùng TLS.
 
-1. **Đặt IP gateway trước khi tạo PFX.** Nhập mật khẩu PFX, bấm **Tạo PFX mới…**, lưu vào một tên chưa tồn tại, ví dụ `C:\ChessServer\chess-lan.pfx`. ServerManager thêm IP đã nhập vào SAN của chứng chỉ. Có thể dùng lại PFX tự ký nếu SAN đã chứa đúng địa chỉ client sẽ dùng.
-2. Bấm **Kiểm tra MySQL**. Khi schema sẵn sàng, bấm **Khởi động**. Trong tab **Vận hành**, xác nhận Gateway hiển thị IP LAN và cổng `8888`, hai worker hiển thị `127.0.0.1:9001` và `127.0.0.1:9002`.
+1. **Đặt Tên/IP chứng chỉ trước khi tạo PFX**, nhất là khi bind `0.0.0.0`. Nhập mật khẩu PFX, bấm **Tạo PFX mới…**, lưu vào một tên chưa tồn tại, ví dụ `C:\ChessServer\chess-lan.pfx`. ServerManager thêm IP bind cụ thể và các tên/IP trong trường chứng chỉ vào SAN. `0.0.0.0` chỉ là địa chỉ lắng nghe, không phải endpoint client hay danh tính chứng chỉ. Có thể dùng lại PFX tự ký nếu SAN đã chứa đúng địa chỉ client sẽ dùng.
+2. Bấm **Kiểm tra MySQL**. Khi schema sẵn sàng, bấm **Khởi động**. Trong tab **Vận hành**, xác nhận Gateway hiển thị địa chỉ bind (`0.0.0.0` hoặc IP LAN) và cổng `8888`, hai worker hiển thị `127.0.0.1:9001` và `127.0.0.1:9002`.
 3. Quay lại **Cấu hình → Xuất .cer LAN…** và lưu `chess-lan.cer`. Khi đang chạy, nút xuất chứng chỉ công khai từ PFX Gateway đang dùng. Chuyển file `.cer` cho B/C qua kênh tin cậy. Giữ PFX và mật khẩu PFX trên máy A.
 
 Nếu nút báo PFX thiếu SAN, tạo PFX mới bằng ServerManager hiện tại rồi xuất lại. Với PFX do CA nội bộ cấp, dùng file `.cer` công khai của **CA gốc** do quản trị viên cung cấp. Tên DNS hoặc IP client dùng phải khớp SAN.

@@ -13,12 +13,13 @@ public sealed class ServerManagerForm : Form
 {
     private static readonly Color Navy = Color.FromArgb(20, 36, 57);
     private static readonly Color Blue = Color.FromArgb(37, 99, 235);
-    private readonly TextBox bindAddress = new() { Text = "127.0.0.1" };
+    private readonly TextBox bindAddress = new() { Text = "0.0.0.0" };
     private readonly NumericUpDown gatewayPort = Port(8888), worker1Port = Port(9001), worker2Port = Port(9002);
     private readonly NumericUpDown workerCapacity = new()
     {
         Minimum = 1, Maximum = GameWorkerPool.MaxRoomCapacity, Value = GameWorkerPool.DefaultRoomCapacity
     };
+    private readonly TextBox certificateHosts = new() { PlaceholderText = "192.168.1.10, chess.example.com" };
     private readonly TextBox certPath = new();
     private readonly TextBox certPassword = new() { UseSystemPasswordChar = true };
     private readonly TextBox lanCertificatePath = new() { ReadOnly = true, PlaceholderText = "Chưa xuất chứng chỉ công khai" };
@@ -54,7 +55,7 @@ public sealed class ServerManagerForm : Form
     private bool busy, closing, allowClose;
     private DateTimeOffset startedAt;
     private int[] displayedPorts = [8888, 9001, 9002];
-    private string displayedAddress = "127.0.0.1";
+    private string displayedAddress = "0.0.0.0";
 
     public ServerManagerForm()
     {
@@ -144,7 +145,7 @@ public sealed class ServerManagerForm : Form
         configTab.Padding = new Padding(18);
         configTab.BackColor = Color.White;
         configTab.AutoScroll = true;
-        var config = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, RowCount = 10 };
+        var config = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, RowCount = 11 };
         config.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 175));
         config.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         config.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
@@ -167,11 +168,12 @@ public sealed class ServerManagerForm : Form
         var note = new Label
         {
             AutoSize = true, MaximumSize = new Size(780, 0), Margin = new Padding(0, 22, 0, 0),
-            Text = "Chỉ mở cổng TCP của Gateway cho client. Khi test LAN bằng PFX tự ký, đặt IP LAN trước khi tạo PFX rồi dùng Xuất .cer LAN. Client cần dùng địa chỉ có trong SAN."
+            Text = "Gateway mặc định 0.0.0.0 (mọi IPv4); dùng 127.0.0.1 nếu chỉ chạy cục bộ. Chỉ mở cổng Gateway, giữ worker nội bộ. Khi tạo PFX, nhập tên/IP client sẽ dùng vào Tên/IP chứng chỉ (phân cách bằng dấu phẩy), không dùng 0.0.0.0. Client cần địa chỉ khớp SAN."
         };
         config.Controls.Add(note, 0, 7);
         config.SetColumnSpan(note, 3);
         AddField(config, 8, "Số phòng tối đa / worker", workerCapacity);
+        AddField(config, 9, "Tên/IP chứng chỉ", certificateHosts);
     }
 
     private static void AddField(TableLayoutPanel panel, int row, string label, Control field, Control? button = null)
@@ -205,7 +207,8 @@ public sealed class ServerManagerForm : Form
 
     private void LoadEnvironment()
     {
-        bindAddress.Text = Environment.GetEnvironmentVariable("CHESS_BIND_ADDRESS") ?? "127.0.0.1";
+        bindAddress.Text = Environment.GetEnvironmentVariable("CHESS_BIND_ADDRESS") ?? "0.0.0.0";
+        certificateHosts.Text = Environment.GetEnvironmentVariable("CHESS_CERT_HOSTS") ?? "";
         if (int.TryParse(Environment.GetEnvironmentVariable("CHESS_WORKER_MAX_ROOMS"), out int capacity) &&
             capacity is >= 1 and <= GameWorkerPool.MaxRoomCapacity)
             workerCapacity.Value = capacity;
@@ -244,7 +247,7 @@ public sealed class ServerManagerForm : Form
     private async Task StartServerAsync()
     {
         if (gameServer is not null) return;
-        if (!IPAddress.TryParse(bindAddress.Text.Trim(), out var address)) throw new InvalidOperationException("IP gateway không hợp lệ.");
+        var address = ServerNetworkOptions.ResolveBindAddress(bindAddress.Text);
         int[] ports = [(int)gatewayPort.Value, (int)worker1Port.Value, (int)worker2Port.Value];
         if (ports.Distinct().Count() != 3) throw new InvalidOperationException("Ba cổng phải khác nhau.");
         if (string.IsNullOrWhiteSpace(certPath.Text) || string.IsNullOrEmpty(certPassword.Text))
@@ -267,11 +270,13 @@ public sealed class ServerManagerForm : Form
         {
             var nextMonitor = new AuthMonitor(new AuthAdmissionService(new MySqlAuthService(connection, legacyMigration.Checked)));
             var sessions = new GameSessions(nextMonitor);
+            monitor.Log("Đang khởi động và chờ hai game worker nội bộ…");
             candidateWorkers.Start(ports[1], ports[2]);
             await candidateWorkers.WaitUntilReadyAsync(lifetime.Token);
             candidateGame = new GameServer(address, loaded.Context, sessions, nextMonitor, candidateWorkers, ports[0],
                 new MySqlMatchStore(connection));
-            candidateGame.Start(lifetime.Token);
+            monitor.Log("Đang khôi phục các trận đang mở trong MySQL (tối đa 30 giây)…");
+            await candidateGame.StartAsync(lifetime.Token);
             lifetime.Token.ThrowIfCancellationRequested();
             // Commit ownership only after all listeners have started successfully.
             foreach (string line in monitor.DrainEvents()) AppendLog(line);
@@ -322,23 +327,8 @@ public sealed class ServerManagerForm : Form
         catch (ArgumentException) { throw new InvalidOperationException("Chuỗi kết nối MySQL không hợp lệ hoặc thiếu Database."); }
     }
 
-    private static async Task ProbeDatabaseAsync(string connectionString, CancellationToken ct)
-    {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(TimeSpan.FromSeconds(5));
-        await using var connection = new MySqlConnection(connectionString);
-        await connection.OpenAsync(deadline.Token);
-        // Read schema only. No account data is retrieved and no existing database is modified.
-        const string schema = """
-            SELECT u.user_id,u.username,u.display_name,u.password_hash,s.elo,s.game_type
-            FROM Users u LEFT JOIN UserGameStats s ON u.user_id=s.user_id LIMIT 0;
-            SELECT room_id,game_type,first_user_id,second_user_id,generation,revision,snapshot,result
-            FROM OnlineMatches LIMIT 0;
-            """;
-        await using var command = new MySqlCommand(schema, connection);
-        await using var reader = await command.ExecuteReaderAsync(deadline.Token);
-        await reader.NextResultAsync(deadline.Token);
-    }
+    private Task ProbeDatabaseAsync(string connectionString, CancellationToken ct) =>
+        DatabaseReadiness.CheckAsync(connectionString, ct, legacyMigration.Checked);
 
     private async Task TestDatabaseAsync()
     {
@@ -358,16 +348,12 @@ public sealed class ServerManagerForm : Form
         using var dialog = new SaveFileDialog { Filter = "Chứng chỉ PFX (*.pfx)|*.pfx", FileName = "chess-auth.pfx", OverwritePrompt = true };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         string path = dialog.FileName, password = certPassword.Text;
-        var ip = IPAddress.TryParse(bindAddress.Text.Trim(), out var parsed) ? parsed : IPAddress.Loopback;
+        var ip = ServerNetworkOptions.ResolveBindAddress(bindAddress.Text);
+        var san = ServerNetworkOptions.CreateSubjectAlternativeNames(ip, certificateHosts.Text);
         await Task.Run(() =>
         {
             using var rsa = RSA.Create(3072);
             var request = new CertificateRequest("CN=Chess Auth", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-            var san = new SubjectAlternativeNameBuilder();
-            san.AddDnsName("localhost");
-            san.AddIpAddress(IPAddress.Loopback);
-            if (!ip.Equals(IPAddress.Any) && !ip.Equals(IPAddress.IPv6Any) && !ip.Equals(IPAddress.Loopback))
-                san.AddIpAddress(ip);
             request.CertificateExtensions.Add(san.Build());
             request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
             request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, true));
@@ -425,7 +411,7 @@ public sealed class ServerManagerForm : Form
         startButton.Enabled = !busy && !running && !closing;
         stopButton.Enabled = !busy && running && !closing;
         bool editable = !busy && !running && !closing;
-        foreach (Control field in new Control[] { bindAddress, gatewayPort, worker1Port, worker2Port, workerCapacity, certPath, certPassword, databaseConnection, legacyMigration, browseButton, createCertificateButton })
+        foreach (Control field in new Control[] { bindAddress, certificateHosts, gatewayPort, worker1Port, worker2Port, workerCapacity, certPath, certPassword, databaseConnection, legacyMigration, browseButton, createCertificateButton })
             field.Enabled = editable;
         testDatabaseButton.Enabled = !busy && !running && !closing;
         exportLanCertificateButton.Enabled = !busy && !closing &&
@@ -498,9 +484,12 @@ public sealed class ServerManagerForm : Form
 
     private static string FriendlyError(Exception error) => error switch
     {
+        DatabaseReadinessException e => e.Message, // Controlled shared preflight message, never provider text.
         // Only messages authored in this form are shown; provider messages may contain secrets.
         InvalidOperationException e when e.Message is "IP gateway không hợp lệ." or "Ba cổng phải khác nhau." or "Cần đường dẫn PFX và mật khẩu chứng chỉ." or "Chứng chỉ phải có khóa riêng và còn hiệu lực." or "Cần chuỗi kết nối MySQL." or "Chuỗi kết nối MySQL không hợp lệ hoặc thiếu Database." or "Nhập mật khẩu PFX trước khi tạo chứng chỉ." or
             "PFX này do CA cấp. Hãy dùng tệp .cer của CA gốc cho client LAN." or "PFX hiện tại thiếu SAN. Hãy đặt IP LAN và tạo PFX mới trước khi xuất .cer." => e.Message,
+        ArgumentException e when e.ParamName == "bindAddress" => "IP gateway không hợp lệ. Dùng địa chỉ IPv4 hoặc IPv6.",
+        ArgumentException e when e.ParamName == "certificateHosts" => "Tên/IP chứng chỉ không hợp lệ. Dùng DNS hoặc IP cụ thể, phân cách bằng dấu phẩy; không nhập cổng, URL hay 0.0.0.0.",
         MySqlException => "Không truy cập được schema MySQL. Kiểm tra kết nối, quyền và migration OnlineMatches.",
         CryptographicException => "Không nạp được chứng chỉ. Kiểm tra định dạng PFX và mật khẩu.",
         SocketException => "Không mở được cổng server. Kiểm tra IP, cổng bị chiếm hoặc server console đang chạy.",

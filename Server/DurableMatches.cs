@@ -4,9 +4,11 @@ using MySqlConnector;
 using OnlineChessGame.Network;
 using System.Collections.Concurrent;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("TransportTests")]
+
 namespace OnlineChessGame.Server;
 
-internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
+internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers, TimeSpan? reconnectWindow = null)
 {
     private static long Now => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
@@ -18,9 +20,14 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
         public ClientSession? FirstSession { get; set; }
         public ClientSession? SecondSession { get; set; }
         public bool Completed { get; set; }
-        public object SyncRoot { get; } = new();
+        public SemaphoreSlim Gate { get; } = new(1, 1);
+        public GameRoom? Room { get; set; }
+        public bool LeaveRequested { get; set; }
     }
 
+    // The first reconciled snapshot is the baseline for this recovery episode.
+    // Never derive another full pause credit from a possibly committed compensation.
+    private readonly ConcurrentDictionary<string, MatchState> _recoveryBaselines = new();
     private readonly ConcurrentDictionary<string, PendingRecovery> _pendingRooms = new();
     private readonly ConcurrentDictionary<int, string> _pendingUserRooms = new();
 
@@ -65,172 +72,235 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
             {
                 Record = record,
                 ReclaimedState = reclaimedState,
-                DeadlineUtc = DateTimeOffset.UtcNow.AddSeconds(90)
+                DeadlineUtc = DateTimeOffset.UtcNow + (reconnectWindow ?? TimeSpan.FromSeconds(90))
             };
 
+            workers.ReserveRecoveryDemand(record.RoomId);
             _pendingRooms[record.RoomId] = pending;
             _pendingUserRooms[record.FirstUserId] = record.RoomId;
             _pendingUserRooms[record.SecondUserId] = record.RoomId;
 
             Console.WriteLine($"[Recovery] Da nhan lai quyen dieu phoi phong {record.RoomId} (Gen {reclaimedState.Generation}, Rev {record.Revision})");
-            _ = MonitorAbandonedAsync(pending, ct);
+
         }
+    }
+
+    // Clocks freeze at detected socket loss. Restart freezes the last stored balances.
+    // This is single-active-Gateway recovery, not a distributed ownership lease.
+    public async Task DisconnectAsync(ClientSession session, RoomManager rooms, CancellationToken ct)
+    {
+        rooms.CancelQueue(session);
+        if (_pendingRooms.TryGetValue(session.CurrentRoomId, out var pending))
+        {
+            await pending.Gate.WaitAsync(ct);
+            bool completed;
+            try {
+                completed = pending.Completed;
+                if (!completed) {
+                    if (ReferenceEquals(pending.FirstSession, session)) pending.FirstSession = null;
+                    if (ReferenceEquals(pending.SecondSession, session)) pending.SecondSession = null;
+                    session.CurrentRoomId = "";
+                }
+            } finally { pending.Gate.Release(); }
+            if (completed) await DisconnectAsync(session, rooms, ct);
+            return;
+        }
+        var room = rooms.GetRoom(session.CurrentRoomId);
+        if (room is null) return;
+        await room.MatchGate.WaitAsync(ct);
+        bool released = false;
+        try
+        {
+            if (!ReferenceEquals(room.Player1, session) && !ReferenceEquals(room.Player2, session)) return;
+            // Another socket may have disconnected while this one waited on MatchGate.
+            if (_pendingRooms.TryGetValue(room.RoomId, out pending))
+            {
+                room.MatchGate.Release();
+                released = true;
+                await DisconnectAsync(session, rooms, ct);
+                return;
+            }
+            if (room.NeedsReload)
+            {
+                room.State = await store.ReadAsync(room.RoomId, ct) ?? throw new IOException("Room snapshot unavailable.");
+                room.NeedsReload = false;
+            }
+            if (room.State is not { Result: null } state)
+            {
+                room.Recovering = false;
+                room.RecoveryStartedAt = null;
+                _recoveryBaselines.TryRemove(room.RoomId, out _);
+                room.DetachWorker();
+                if (room.State is { } terminal) await PublishAsync(room, Snapshot(room, terminal), ct);
+                await rooms.RemoveClientAsync(session, false);
+                return;
+            }
+            long now = Now;
+            long freezeAt = room.RecoveryStartedAt ?? now;
+            var baseline = _recoveryBaselines.TryRemove(room.RoomId, out var recoveryBaseline) ? recoveryBaseline : state;
+            var frozen = state with { FirstMilliseconds = baseline.Remaining(1, freezeAt), SecondMilliseconds = baseline.Remaining(2, freezeAt),
+                TurnStartedAt = now, ObservedAt = now };
+            pending = new PendingRecovery {
+                Record = new OpenMatchRecord(room.RoomId, room.GameMode, room.Player1.Player!.UserId, room.Player2.Player!.UserId,
+                    (int)state.Generation, (int)state.Revision, state),
+                ReclaimedState = frozen, Room = room,
+                DeadlineUtc = DateTimeOffset.UtcNow + (reconnectWindow ?? TimeSpan.FromSeconds(90)),
+                FirstSession = ReferenceEquals(room.Player1, session) ? null : room.Player1,
+                SecondSession = ReferenceEquals(room.Player2, session) ? null : room.Player2 };
+            room.Recovering = true;
+            room.DetachWorker();
+            _pendingRooms[room.RoomId] = pending;
+            _pendingUserRooms[pending.Record.FirstUserId] = room.RoomId;
+            _pendingUserRooms[pending.Record.SecondUserId] = room.RoomId;
+            session.CurrentRoomId = "";
+            await PublishAsync(room, new GamePacket(PacketType.RECOVERING, RoomId: room.RoomId, GameMode: room.GameMode), ct);
+        }
+        finally { if (!released) room.MatchGate.Release(); }
+    }
+
+    public async Task LeaveAsync(GameRoom room, ClientSession session, RoomManager rooms, CancellationToken ct)
+    {
+        if (!ReferenceEquals(room.Player1, session) && !ReferenceEquals(room.Player2, session)) return;
+        await DisconnectAsync(session, rooms, ct);
+        if (!_pendingRooms.TryGetValue(room.RoomId, out var pending)) return;
+        await pending.Gate.WaitAsync(ct);
+        try {
+            if (!ReferenceEquals(room.Player1, session) && !ReferenceEquals(room.Player2, session)) return;
+            pending.LeaveRequested = true;
+        }
+        finally { pending.Gate.Release(); }
+        await AdvancePendingAsync(pending, rooms, ct);
+    }
+
+    public async Task<bool> LeavePendingAsync(ClientSession session, RoomManager rooms, CancellationToken ct)
+    {
+        if (!_pendingRooms.TryGetValue(session.CurrentRoomId, out var pending)) return false;
+        await pending.Gate.WaitAsync(ct);
+        try {
+            if (!ReferenceEquals(pending.FirstSession, session) && !ReferenceEquals(pending.SecondSession, session)) return false;
+            pending.LeaveRequested = true;
+        } finally { pending.Gate.Release(); }
+        await AdvancePendingAsync(pending, rooms, ct);
+        return true;
     }
 
     public async Task<bool> TryResumePlayerAsync(ClientSession session, RoomManager rooms, CancellationToken ct)
     {
         if (session.Player is null) return false;
-        int userId = session.Player.UserId;
-
-        if (!_pendingUserRooms.TryGetValue(userId, out var roomId) ||
-            !_pendingRooms.TryGetValue(roomId, out var pending))
-            return false;
-
-        bool isFirst;
-        bool bothConnected;
-        ClientSession? p1;
-        ClientSession? p2;
-        MatchState currentState;
-
-        lock (pending.SyncRoot)
+        if (!_pendingUserRooms.ContainsKey(session.Player.UserId))
         {
-            if (pending.Completed || DateTimeOffset.UtcNow > pending.DeadlineUtc)
-                return false;
-
-            isFirst = userId == pending.Record.FirstUserId;
-            if (isFirst)
-                pending.FirstSession = session;
-            else if (userId == pending.Record.SecondUserId)
-                pending.SecondSession = session;
-            else
-                return false;
-
-            session.CurrentRoomId = roomId;
-            session.Elo = pending.Record.GameType == "CARO"
-                ? session.Player.CaroElo
-                : session.Player.ChessElo;
-
-            p1 = pending.FirstSession;
-            p2 = pending.SecondSession;
-            bothConnected = p1 is not null && p2 is not null;
-            if (bothConnected)
-                pending.Completed = true;
-
-            currentState = pending.ReclaimedState;
+            var active = rooms.ActiveRooms().FirstOrDefault(r => !r.Closing && r.State is { Result: null } &&
+                (r.Player1.Player?.UserId == session.Player.UserId || r.Player2.Player?.UserId == session.Player.UserId));
+            if (active is not null)
+            {
+                var previous = active.Player1.Player?.UserId == session.Player.UserId ? active.Player1 : active.Player2;
+                await DisconnectAsync(previous, rooms, ct);
+                previous.Tcp.Dispose();
+            }
         }
-
-        string sidePayload = isFirst
-            ? $"FIRST|{p2?.Elo ?? 1200}"
-            : $"SECOND|{p1?.Elo ?? 1200}";
-        string opponentName = isFirst
-            ? (p2?.Username ?? "Đối thủ")
-            : (p1?.Username ?? "Đối thủ");
-
-        // Đẩy bàn cờ từ MySQL về ngay cho client vừa đăng nhập
-        await session.SendAsync(new GamePacket(
-            PacketType.MATCH_FOUND,
-            Sender: opponentName,
-            RoomId: roomId,
-            GameMode: pending.Record.GameType,
-            Payload: sidePayload,
-            State: currentState with { ObservedAt = Now }
-        ), ct);
-
-        if (!bothConnected)
+        if (!_pendingUserRooms.TryGetValue(session.Player.UserId, out var id) ||
+            !_pendingRooms.TryGetValue(id, out var pending)) return false;
+        await pending.Gate.WaitAsync(ct);
+        try
         {
-            // Mới có 1 người quay lại -> tạm khóa chờ đối thủ
-            await session.SendAsync(new GamePacket(
-                PacketType.RECOVERING,
-                RoomId: roomId,
-                GameMode: pending.Record.GameType
-            ), ct);
-            return true;
+            if (pending.Completed) return false;
+            bool first = session.Player.UserId == pending.Record.FirstUserId;
+            var previous = first ? pending.FirstSession : pending.SecondSession;
+            if (previous is not null && !ReferenceEquals(previous, session)) { previous.CurrentRoomId = ""; previous.Tcp.Dispose(); }
+            if (first) pending.FirstSession = session; else pending.SecondSession = session;
+            session.CurrentRoomId = id;
+            session.Elo = pending.Record.GameType == "CARO" ? session.Player.CaroElo : session.Player.ChessElo;
+            var opponent = first ? pending.SecondSession : pending.FirstSession;
+            await session.SendAsync(new GamePacket(PacketType.MATCH_FOUND, Sender: opponent?.Username ?? "Opponent",
+                RoomId: id, GameMode: pending.Record.GameType, Payload: $"{(first ? "FIRST" : "SECOND")}|{opponent?.Elo ?? 1200}|RESUME",
+                State: pending.ReclaimedState with { TurnStartedAt = Now, ObservedAt = Now }), ct);
+            if (pending.FirstSession is null || pending.SecondSession is null)
+                await session.SendAsync(new GamePacket(PacketType.RECOVERING, RoomId: id, GameMode: pending.Record.GameType), ct);
         }
-
-        // Cả 2 người chơi đã quay lại -> gỡ khỏi hàng chờ và nạp lại vào Worker
-        _pendingRooms.TryRemove(roomId, out _);
-        _pendingUserRooms.TryRemove(pending.Record.FirstUserId, out _);
-        _pendingUserRooms.TryRemove(pending.Record.SecondUserId, out _);
-
-        var room = new GameRoom
-        {
-            RoomId = roomId,
-            GameMode = pending.Record.GameType,
-            Player1 = p1!,
-            Player2 = p2!,
-            State = currentState
-        };
-
-        var worker = await workers.OpenRoomAsync(room, ct, isFailover: true);
-        if (!room.AttachWorker(worker))
-        {
-            worker.Dispose();
-            return true;
-        }
-
-        // Bù thời gian lúc Gateway tắt để không trừ oan đồng hồ của người đang tới lượt
-        var resumedState = currentState with
-        {
-            TurnStartedAt = Now,
-            ObservedAt = Now
-        };
-        if (await store.UpdateAsync(roomId, currentState, resumedState, ct))
-            room.State = resumedState;
-
-        rooms.RegisterRecoveredRoom(room);
-        room.MarkReady();
-
-        Console.WriteLine($"[Recovery] Phong {roomId} da phuc hoi thanh cong: {p1!.Username} vs {p2!.Username}");
-        await PublishAsync(room, Snapshot(room, room.State!), ct);
+        finally { pending.Gate.Release(); }
+        await AdvancePendingAsync(pending, rooms, ct);
         return true;
     }
 
-    // Chính sách 2: Quá 90 giây mà chưa đủ 2 người quay lại -> chốt hủy ván bỏ dở
-    private async Task MonitorAbandonedAsync(PendingRecovery pending, CancellationToken ct)
+    private void RemovePending(PendingRecovery pending)
     {
-        try
-        {
-            var delay = pending.DeadlineUtc - DateTimeOffset.UtcNow;
-            if (delay > TimeSpan.Zero)
-                await Task.Delay(delay, ct);
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-
-        ClientSession? waitingPlayer;
-        lock (pending.SyncRoot)
-        {
-            if (pending.Completed) return;
-            pending.Completed = true;
-            waitingPlayer = pending.FirstSession ?? pending.SecondSession;
-        }
-
-        string roomId = pending.Record.RoomId;
-        _pendingRooms.TryRemove(roomId, out _);
+        pending.Completed = true;
+        workers.ReleaseRecoveryDemand(pending.Record.RoomId);
+        _pendingRooms.TryRemove(pending.Record.RoomId, out _);
         _pendingUserRooms.TryRemove(pending.Record.FirstUserId, out _);
         _pendingUserRooms.TryRemove(pending.Record.SecondUserId, out _);
+    }
 
-        long now = Now;
-        var aborted = pending.ReclaimedState with
+    private async Task AdvancePendingAsync(PendingRecovery pending, RoomManager rooms, CancellationToken ct)
+    {
+        await pending.Gate.WaitAsync(ct);
+        try
         {
-            Result = "ABORTED",
-            Reason = "Hết thời gian chờ người chơi kết nối lại sau khi khởi động lại Gateway.",
-            Revision = pending.ReclaimedState.Revision + 1,
-            ObservedAt = now
-        };
-        await store.AbortMatchAsync(roomId, (int)pending.ReclaimedState.Generation, aborted, ct);
+            if (pending.Completed) return;
+            string id = pending.Record.RoomId;
+            if (pending.LeaveRequested || DateTimeOffset.UtcNow >= pending.DeadlineUtc)
+            {
+                var saved = await store.ReadAsync(id, ct) ?? throw new IOException("Missing recovery record.");
+                if (saved.Generation != pending.ReclaimedState.Generation) { RemovePending(pending); return; }
+                if (saved.Result is null)
+                {
+                    var aborted = saved with { Result = "ABORTED", Reason = "Reconnect expired or player left.", Revision = saved.Revision + 1, ObservedAt = Now };
+                    if (!await store.UpdateAsync(id, saved, aborted, ct)) return;
+                }
+                RemovePending(pending);
+                if (pending.Room is not null) rooms.RemoveClosedRoom(pending.Room);
+                foreach (var player in new[] { pending.FirstSession, pending.SecondSession })
+                    if (player is not null) {
+                        player.CurrentRoomId = "";
+                        await player.SendAsync(new GamePacket(PacketType.OPPONENT_LEFT, RoomId: id, GameMode: pending.Record.GameType), ct);
+                    }
+                return;
+            }
+            if (pending.FirstSession is null || pending.SecondSession is null) return;
+            var room = pending.Room ??= new GameRoom { RoomId = id, GameMode = pending.Record.GameType,
+                Player1 = pending.FirstSession, Player2 = pending.SecondSession, State = pending.ReclaimedState };
+            await room.MatchGate.WaitAsync(ct);
+            try
+            {
+                if (pending.FirstSession is null || pending.SecondSession is null) return;
+                room.Player1 = pending.FirstSession;
+                room.Player2 = pending.SecondSession;
+                var saved = await store.ReadAsync(id, ct) ?? throw new IOException("Missing recovery record.");
+                if (saved.Result is not null || saved.Generation != pending.ReclaimedState.Generation) return;
+                if (saved.Revision != pending.ReclaimedState.Revision)
+                    throw new IOException("Recovery snapshot was superseded.");
+                room.State = saved;
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(3));
+                var worker = await workers.OpenRoomAsync(room, timeout.Token, isFailover: true);
+                try
+                {
+                    var resumed = pending.ReclaimedState with { TurnStartedAt = Now, ObservedAt = Now };
+                    if (!await store.UpdateAsync(id, saved, resumed, timeout.Token)) return;
+                    if (!room.AttachWorker(worker)) return;
+                    room.State = resumed;
+                    worker = null!;
+                }
+                finally { worker?.Dispose(); }
+                room.Recovering = false;
+                room.RecoveryStartedAt = null;
+                rooms.RegisterRecoveredRoom(room);
+                room.MarkReady();
+                RemovePending(pending);
+                await PublishAsync(room, Snapshot(room, room.State!), ct);
+            }
+            finally { room.MatchGate.Release(); }
+        }
+        catch (Exception ex) when (IsTransient(ex) && !ct.IsCancellationRequested) { }
+        finally { pending.Gate.Release(); }
+    }
 
-        if (waitingPlayer is not null)
+    public void StopRecovery()
+    {
+        foreach (var pending in _pendingRooms.Values)
         {
-            waitingPlayer.CurrentRoomId = string.Empty;
-            await waitingPlayer.SendAsync(new GamePacket(
-                PacketType.OPPONENT_LEFT,
-                RoomId: roomId,
-                GameMode: pending.Record.GameType,
-                Payload: "Đối thủ không quay lại kịp thời. Ván đấu đã bị hủy."
-            ), ct);
+            workers.ReleaseRecoveryDemand(pending.Record.RoomId);
+            pending.Room?.Close();
         }
     }
 
@@ -240,7 +310,10 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
         try
         {
             while (await timer.WaitForNextTickAsync(ct))
-                await Task.WhenAll(rooms.ActiveRooms().Select(room => TickAsync(room, ct)));
+            {
+                await Task.WhenAll(_pendingRooms.Values.Select(p => AdvancePendingAsync(p, rooms, ct)));
+                await Task.WhenAll(rooms.ActiveRooms().Where(room => !_pendingRooms.ContainsKey(room.RoomId)).Select(room => TickAsync(room, ct)));
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
     }
@@ -257,7 +330,8 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
         await room.MatchGate.WaitAsync(ct);
         try
         {
-            if (room.Closing || room.State is not { Result: null }) return;
+            if (room.Closing || room.Recovering && _pendingRooms.ContainsKey(room.RoomId) || room.State is not { Result: null } ||
+                (!ReferenceEquals(sender, room.Player1) && !ReferenceEquals(sender, room.Player2))) return;
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
             deadline.CancelAfter(TimeSpan.FromSeconds(5));
             var token = deadline.Token;
@@ -284,6 +358,8 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
             room.NeedsReload = true;
             if (!await store.UpdateAsync(room.RoomId, old, candidate, token))
                 throw new IOException("Match revision or generation changed.");
+            // Read committed enrichment before publication; leave NeedsReload set on ambiguous failures.
+            candidate = await store.ReadAsync(room.RoomId, token) ?? throw new IOException("Committed snapshot unavailable.");
             room.State = candidate;
             room.NeedsReload = false;
             await PublishAsync(room, Snapshot(room, candidate), ct);
@@ -306,7 +382,8 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
         await room.MatchGate.WaitAsync(ct);
         try
         {
-            if (room.Closing || room.Worker is not { IsAvailable: true } worker || room.Recovering) return;
+            if (room.Closing || room.Worker is not { IsAvailable: true } worker || room.Recovering ||
+                (!ReferenceEquals(sender, room.Player1) && !ReferenceEquals(sender, room.Player2))) return;
             var forwarded = await worker.RelayAsync(packet with
             {
                 RoomId = room.RoomId, GameMode = room.GameMode, Sender = sender.SessionId, State = null
@@ -322,31 +399,6 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
         finally { room.MatchGate.Release(); }
     }
 
-    public async Task AbandonAsync(GameRoom room)
-    {
-        room.Closing = true;
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        bool entered = false;
-        try
-        {
-            await room.MatchGate.WaitAsync(deadline.Token);
-            entered = true;
-            if (room.State is null) return;
-            if (await store.ReadAsync(room.RoomId, deadline.Token) is not { Result: null } old) return;
-            long now = Now;
-            var result = old with { Result = "ABORTED", Reason = "Người chơi đã rời trận.",
-                Revision = old.Revision + 1, ObservedAt = now, FirstMilliseconds = old.Remaining(1, now),
-                SecondMilliseconds = old.Remaining(2, now), TurnStartedAt = now };
-            // The caller sends OPPONENT_LEFT after removing the room.
-            if (await store.UpdateAsync(room.RoomId, old, result, deadline.Token)) room.State = result;
-        }
-        catch (Exception ex) when (IsTransient(ex))
-        {
-            Console.Error.WriteLine($"Could not record room abandonment ({ex.GetType().Name}).");
-        }
-        finally { if (entered) room.MatchGate.Release(); }
-    }
-
     private async Task<WorkerRoom?> EnsureWorkerAsync(GameRoom room, CancellationToken ct)
     {
         if (room.Worker is { IsAvailable: true } current && !room.NeedsReload && !room.Recovering) return current;
@@ -358,11 +410,14 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
         {
             room.Recovering = false;
             room.RecoveryStartedAt = null;
+            _recoveryBaselines.TryRemove(room.RoomId, out _);
             await PublishAsync(room, Snapshot(room, saved), ct);
             room.DetachWorker();
             return null;
         }
+        var baseline = _recoveryBaselines.GetOrAdd(room.RoomId, saved);
         long pausedMs = room.RecoveryStartedAt is long pausedAt ? Math.Max(0, Now - pausedAt) : 0;
+        long compensatedStart = baseline.TurnStartedAt + pausedMs;
         if (room.Worker is not { IsAvailable: true } surviving)
         {
             room.DetachWorker();
@@ -370,10 +425,11 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
             var fenced = saved with
             {
                 Generation = saved.Generation + 1,
-                TurnStartedAt = saved.TurnStartedAt + pausedMs
+                TurnStartedAt = compensatedStart
             };
             try
             {
+                room.NeedsReload = true;
                 if (!await store.UpdateAsync(room.RoomId, saved, fenced, ct))
                     throw new IOException("Could not transfer match ownership.");
                 if (!room.AttachWorker(surviving))
@@ -387,12 +443,16 @@ internal sealed class DurableMatches(IMatchStore store, GameWorkerPool workers)
         }
         else if (pausedMs > 0)
         {
-            var compensated = saved with { TurnStartedAt = saved.TurnStartedAt + pausedMs };
-            if (await store.UpdateAsync(room.RoomId, saved, compensated, ct))
-                room.State = compensated;
+            var compensated = saved with { TurnStartedAt = compensatedStart };
+            room.NeedsReload = true;
+            if (!await store.UpdateAsync(room.RoomId, saved, compensated, ct))
+                throw new IOException("Could not compensate match clock.");
+            room.State = compensated;
         }
+        room.NeedsReload = false;
         room.Recovering = false;
         room.RecoveryStartedAt = null;
+        _recoveryBaselines.TryRemove(room.RoomId, out _);
         await PublishAsync(room, Snapshot(room, room.State!), ct);
         return surviving;
     }

@@ -3,7 +3,7 @@ using OnlineChessGame.Network;
 namespace OnlineChessGame.Auth;
 
 /// <summary>Global, zero-queue admission before any inner authentication work.</summary>
-public sealed class AuthAdmissionService : IAuthService
+public sealed class AuthAdmissionService : IAuthService, IPlayerProfileReader
 {
     private readonly IAuthService _inner;
     private readonly object _gate = new();
@@ -30,6 +30,10 @@ public sealed class AuthAdmissionService : IAuthService
         _tokens = burstCapacity;
         _lastRefill = _timeProvider.GetTimestamp();
     }
+
+    public Task<PlayerProfile?> ReadProfileAsync(int userId, CancellationToken ct) =>
+        _inner is IPlayerProfileReader reader ? reader.ReadProfileAsync(userId, ct)
+            : throw new InvalidOperationException("Profile reader is not configured.");
 
     public async Task<AuthResponse> HandleAsync(AuthRequest request, CancellationToken ct = default)
     {

@@ -1,46 +1,140 @@
-Framework hiện tại đã đạt mục tiêu chia tải và phục hồi khi một tiến trình game worker sập. Hai worker thực sự xử lý trận Cờ vua và Caro. Gateway chọn nơi đặt phòng, giữ kết nối với hai người chơi và có thể chuyển phòng sang worker còn sức chứa. Khoảng trống lớn nhất so với kỳ vọng “server dự phòng” là nếu Gateway, máy chạy server hoặc kết nối của người chơi bị mất, ván đã lưu trong MySQL vẫn chưa có đường để hai client vào chơi tiếp. Điều phối phục hồi (Server/DurableMatches.cs) · Kho trạng thái trận (Server/MatchStore.cs) · README hiện tại (README.md)
+# Đánh giá framework sau giai đoạn 2
 
-Mình đối chiếu ba mốc riêng biệt: sơ đồ bạn gửi, README cũ tại commit 384fca7, và mã nguồn trong thư mục làm việc hiện tại của feat/server-chessgame. Phân biệt này quan trọng vì kế hoạch bốn giai đoạn đã chủ động chọn MySQL, TLS tại Gateway và ghép trận tập trung. Một số khác biệt với ảnh là quyết định kiến trúc, còn một số ảnh hưởng trực tiếp đến khả năng chịu lỗi. Kế hoạch bốn giai đoạn (PLAN_UDP_WORKFLOW.md)
+## 1. Phạm vi và kết luận hiện tại
 
-### 1. Đối chiếu từng thành phần trong ảnh
+Tài liệu phản ánh working tree của nhánh `feat/server-chessgame` sau đợt sửa hỗ trợ LAN/Internet ngày 28/11/2026, bao gồm các thay đổi chưa commit. Không coi kết quả tại commit `e1bc53a` là kết quả của mã hiện tại.
 
-| Thành phần trong flow                      | Framework hiện tại                                                                                                                                                                              | Đánh giá kỹ thuật                                                                                                                                                                                                                                                                                                                                                      |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client → Load Balancer 8888                | Client dùng TCP/TLS 8888 cho đăng nhập và gameplay. Gateway kết thúc TLS, đọc gói ứng dụng, xác định phòng rồi chuyển yêu cầu tới worker.                                                       | Đạt mục tiêu một cổng công khai. Gateway hiểu giao thức game và tham gia xử lý từng nước đi, nên hiệu năng và sự sẵn sàng của Gateway ảnh hưởng mọi phòng. GameServer (Server/GameServer.cs)                                                                                                                                                                           |
-| Primary Worker 1 và 2                      | Hai tiến trình con lắng nghe 127.0.0.1:9001/9002. Mỗi worker nhận nhiều phòng, kiểm tra người gửi, luật chơi và tính trạng thái kế tiếp.                                                        | Đã đạt vai trò sub game server bạn mô tả. Liên kết nội bộ dùng TCP loopback và bí mật riêng cho mỗi tiến trình. Mô hình này cần thay đổi trước khi đưa worker sang hai máy khác nhau. GameWorker (Server/GameWorker.cs:15) · GameWorkerPool (Server/GameWorkerPool.cs:253)                                                                                             |
-| Heartbeat & Sync giữa hai worker           | Gateway thăm dò từng worker. Khi chuyển phòng, Gateway đọc trạng thái đã lưu, tăng generation và gán lại phòng. Hai worker không gửi trạng thái bàn cờ trực tiếp cho nhau.                      | Đạt phục hồi từ nước đã xác nhận khi một worker chết. Sơ đồ đúng với code nên vẽ Gateway ↔ từng worker và Gateway ↔ MySQL. DurableMatches (Server/DurableMatches.cs)                                                                                                                                                                                                   |
-| Matchmaker & Arbiter                       | Gateway ghép hai tài khoản khác nhau theo loại cờ và quản lý hàng chờ trong RAM. Worker phân xử nước đi. Gateway ghi kết quả.                                                                   | Ba trách nhiệm trong ô này nằm ở ba bước khác nhau. Đã có ghép trận và phân xử. Ghép theo khoảng Elo, cập nhật Elo cuối trận và lịch sử trong sảnh còn thiếu. RoomManager (Server/RoomManager.cs:125) · MatchRules (Server/MatchRules.cs) · README (README.md)                                                                                                         |
-| SQLite WAL, hai worker cùng ghi            | Trạng thái được lưu ở OnlineMatches trong MySQL. Gateway gửi lệnh cập nhật có điều kiện theo phòng, generation, revision và kết quả hiện có.                                                    | MySQL đã đáp ứng mục tiêu lưu nước đi và chốt kết quả một lần. Thêm SQLite chỉ để giống ảnh sẽ tạo thêm một kho cần đồng bộ. Điểm còn thiếu là khả năng vận hành qua sự cố DB. MatchStore (Server/MatchStore.cs:39)                                                                                                                                                    |
-| UDP latency probe, UDP telemetry, P2P chat | Chat đi qua cùng đường TCP với Gateway và worker. Chỉ số độ trễ hiện có đo vòng hỏi–đáp giữa Gateway và worker.                                                                                 | Ba đường UDP trong ảnh chưa được triển khai. Đặc biệt, số ms trên ServerManager không đo ping từ máy B/C đến máy A. Nếu người chơi thấy lag qua Wi‑Fi, chỉ số worker vẫn có thể rất thấp. GameWorkerPool (Server/GameWorkerPool.cs:155) · DurableMatches (Server/DurableMatches.cs)                                                                                    |
-| TLS PKI, RSA-3072 và SHA-256 pin           | ServerManager có thể tạo PFX RSA-3072. Client xác minh Gateway bằng tên máy chủ và nguồn tin cậy của hệ điều hành hoặc .cer phân phối cho LAN. Sau đăng nhập có token phiên và vé game một lần. | Đã giải quyết việc người chơi phải nhập pin. Với Internet, trải nghiệm tải app rồi đăng nhập vẫn phụ thuộc vào việc bản phát hành trỏ tới đúng tên miền và server trình bày chuỗi chứng chỉ hợp lệ. Worker hiện không cần giữ khóa riêng TLS của Gateway. GatewayProtocol (Network/GatewayProtocol.cs:17) · ServerManagerForm (ServerManager/ServerManagerForm.cs:364) |
-| In-memory game engine / Offline Solo       | Cả hai game có engine chạy tại client. Cờ vua có engine C# dự phòng khi thiếu Stockfish. Luồng UI thông thường vào sảnh sau đăng nhập thành công.                                               | Engine chạy cục bộ đã đạt. Nếu “Offline Solo” trong ảnh có nghĩa là mở app khi mất mạng và vào chơi ngay, luồng đăng nhập hiện tại còn thiếu lối vào Solo trực tiếp. LoginForm (Design/LoginForm.cs:129) · README (README.md)                                                                                                                                          |
+Framework có Gateway TCP/TLS phục vụ xác thực và gameplay, hai game worker chạy bằng tiến trình riêng, cùng MySQL lưu trạng thái trận. Đã có chia tải, giữ chỗ, heartbeat, khởi động lại worker và phục hồi trận khi một worker mất kết nối. Gateway hiện mặc định nhận kết nối trên mọi giao diện IPv4 thay vì chỉ localhost. Việc truy cập được từ Internet còn phụ thuộc firewall, NAT, DNS và chứng chỉ; thay đổi bind không tự giải quyết các điều kiện triển khai đó.
 
-### 2. Bốn giới hạn kỹ thuật đáng chú ý nhất
+Phục hồi sau khi Gateway khởi động lại đã có ở tầng giao thức và được kiểm tra với kho giả lập. Tuy nhiên, chưa thể kết luận trải nghiệm vào lại ván bằng hai client WinForms đã hoàn chỉnh. Mất kết nối client khi Gateway vẫn hoạt động vẫn có thể chốt ván `ABORTED`; đây là giới hạn khác với lỗi worker.
 
-① Hai worker đang chia tải chủ động, nhưng khả năng dự phòng phụ thuộc sức chứa còn trống. Gateway chọn worker theo max(số phòng đã giữ chỗ, số phòng worker báo), dùng độ trễ heartbeat để phân định khi bằng tải. Cách giữ chỗ xử lý đúng tình huống nhiều cặp ghép đồng thời trước kỳ heartbeat tiếp theo. Tuy nhiên, con số “sessions” trên heartbeat được tính bằng 2 × số phòng, còn độ trễ heartbeat chỉ đo thời gian phản hồi probe. Hai số này chưa cho biết thời gian xác nhận nước cờ, tải CPU hay thời gian chờ DB. Chọn worker (Server/GameWorkerPool.cs:195) · Tạo heartbeat (Server/GameWorker.cs:52)
+Nguồn đối chiếu: [Gateway](../Server/GameServer.cs), [worker pool](../Server/GameWorkerPool.cs), [điều phối trận bền vững](../Server/DurableMatches.cs), [kho trận MySQL](../Server/MatchStore.cs), [test phục hồi](../Tests/TransportTests/MatchRecoveryTests.cs).
 
-Ví dụ, với cấu hình mặc định 32 phòng/worker, nếu mỗi bên đang chạy 24 phòng rồi Worker 1 chết, Worker 2 chỉ còn 8 chỗ để tiếp nhận ngay. 16 phòng còn lại phải chờ có chỗ hoặc chờ worker khởi động lại. Đồng hồ trận vẫn chạy trong thời gian đó. Nếu yêu cầu nghiệp vụ là mọi ván đang chơi đều có chỗ ngay khi mất một worker, tổng số phòng nhận vào phải nằm trong sức chứa của worker sống sót, hoặc hệ thống cần thêm năng lực dự phòng. Đây là khác biệt thực tế giữa “có hai worker” và “đủ tải để chịu mất một worker”. Sức chứa mặc định (Server/GameWorkerPool.cs:20) · Luồng chờ phục hồi (Server/DurableMatches.cs)
+## 2. Kiến trúc thực tế
 
-② Đã bảo vệ nước đi được xác nhận, nhưng chưa bảo vệ quyền quay lại ván của người chơi. Worker tính trạng thái ứng viên. Gateway chỉ phát snapshot cho hai client sau khi MySQL chấp nhận đúng generation và revision. Khi worker chết, thế hệ mới bảo vệ phòng khỏi cập nhật cũ. Nhưng ánh xạ phòng, hai socket và hàng chờ vẫn nằm trong RAM của Gateway. Khi client mất kết nối, luồng hiện tại có thể chốt ABORTED và gỡ phòng. Khi Gateway khởi động lại, kho trận chỉ có thao tác đọc theo roomId, chưa có thao tác tìm các ván đang mở để dựng lại phòng. Vì vậy, kill worker và tắt Wi‑Fi trên máy B trong vài giây là hai bài test có kết quả rất khác nhau. DurableMatches (Server/DurableMatches.cs) · RoomManager (Server/RoomManager.cs) · Giao diện kho trận (Server/MatchStore.cs:7)
+| Thành phần | Hành vi hiện tại | Phạm vi và giới hạn |
+| --- | --- | --- |
+| Client → Gateway | Một cổng TCP/TLS mặc định `8888` cho đăng ký, đăng nhập và gameplay. Gateway kết thúc TLS, giữ kết nối và điều phối phòng. | Gateway tham gia đường xử lý từng nước đi, không chỉ chuyển tiếp TCP. Đây vẫn là điểm lỗi chung của các phòng. |
+| Game worker 1 và 2 | Hai tiến trình con lắng nghe `127.0.0.1:9001/9002`, kiểm tra người gửi, luật chơi và trạng thái kế tiếp. Gateway kết nối bằng bí mật riêng của từng tiến trình. | Loopback là chủ ý bảo vệ kênh nội bộ, không ngăn client LAN/Internet đi qua Gateway. Chưa hỗ trợ bố trí hai worker trên hai máy riêng. |
+| Chia tải và dự phòng | Chọn worker theo tải giữ chỗ/heartbeat; khi bằng tải, xét yêu cầu đang xử lý, thời gian xử lý luật trung bình, CPU rồi độ trễ probe. Có chế độ ngừng nhận trận mới. | Mặc định 32 phòng/worker, ngưỡng nhận phòng mới toàn pool là 32, không phải 64. Khả năng phục hồi còn phụ thuộc tải thực và sức chứa lúc xảy ra lỗi. |
+| Heartbeat và đồng bộ | Gateway thăm dò từng worker. Phục hồi lấy snapshot từ kho trận rồi cấp generation mới; worker không đồng bộ trực tiếp với nhau. | Sơ đồ đúng với mã là Gateway ↔ từng worker và Gateway ↔ MySQL. |
+| Ghép trận và phân xử | Gateway ghép hai tài khoản khác nhau theo loại cờ; worker phân xử nước đi; Gateway lưu trạng thái/kết quả. | Chưa có ghép theo khoảng Elo, cập nhật Elo cuối trận và lịch sử trận trong sảnh. |
+| Lưu trạng thái | `OnlineMatches` trong MySQL lưu lịch sử nước đi, lượt, đồng hồ, generation, revision và kết quả. Cập nhật nước đi thông thường có điều kiện theo generation/revision. | Không dùng SQLite WAL. Hai thao tác reclaim/abort sau khởi động lại còn vấn đề đã ghi nhận ở mục 5. |
+| TLS và danh tính | Client chính dùng `GatewayClient`, xác minh tên/IP và nguồn tin cậy hệ điều hành hoặc `.cer` phân phối cho LAN. Sau đăng nhập có token phiên và vé game một lần. | `AuthCluster`/`AuthClient` là luồng auth cũ dùng SHA-256 pin; không được nhầm với entrypoint Gateway v3 của ứng dụng. |
+| Chat và telemetry | Chat dùng TCP/TLS; heartbeat có CPU, số yêu cầu đang xử lý và thời gian xử lý luật trung bình. | Chưa có UDP latency probe, UDP telemetry hay P2P chat. Số ms heartbeat không phải RTT client–Gateway hoặc độ trễ MOVE→STATE. |
+| Solo | Cờ vua có Stockfish và engine C# dự phòng; Caro có engine C# cục bộ. | Luồng UI thông thường vẫn yêu cầu đăng nhập trước khi vào sảnh; chưa có lối vào Solo trực tiếp khi mất mạng. |
 
-③ Đường xác nhận nước đi còn những chi phí mà heartbeat không thể hiện. Với mỗi nước đi, Gateway gửi trạng thái hiện có sang worker. Worker dựng lại bàn từ lịch sử, kiểm luật và trả trạng thái mới. Gateway ghi snapshot vào MySQL rồi mới phát cho hai client. Lịch sử càng dài thì lượng dữ liệu và công dựng lại bàn càng tăng. Cách này đơn giản hóa phục hồi và giữ được lịch sử cần cho luật lặp thế cờ vua. Đổi lại, một trận cờ vua dài và một trận Caro vừa bắt đầu đều được bộ chia tải tính là một phòng. Chưa có số đo để kết luận hệ thống sẽ chậm ở bao nhiêu phòng. Chỉ số nên đo đầu tiên là thời gian từ lúc client gửi nước tới lúc nhận STATE, tách phần xử lý luật, ghi DB và truyền mạng, lấy p95/p99 theo số phòng và độ dài ván. Dựng lại bàn cờ (Server/MatchRules.cs:51) · Thứ tự xử lý và xác nhận (Server/DurableMatches.cs:44)
+Nguồn: [GameServer](../Server/GameServer.cs), [GameWorker](../Server/GameWorker.cs), [GameWorkerPool](../Server/GameWorkerPool.cs), [MatchRules](../Server/MatchRules.cs), [RoomManager](../Server/RoomManager.cs), [GatewayProtocol](../Network/GatewayProtocol.cs), [LoginForm](../Design/LoginForm.cs).
 
-④ Gateway và MySQL vẫn là hai điểm lỗi chung. Nếu DB chậm hoặc ngắt kết nối, cả hai worker có thể vẫn báo khỏe trong khi người chơi không nhận được xác nhận nước mới. Nếu máy A đang chạy Gateway và hai worker bị tắt, cả ba tiến trình mất cùng lúc. Đưa riêng worker sang máy khác cũng chưa đủ để xử lý sự cố Gateway, vì client và phòng vẫn gắn với Gateway hiện hành. Với đồ án, nên mô tả đúng mức bảo đảm là chịu lỗi một tiến trình worker khi Gateway, MySQL và kết nối client còn hoạt động. Khởi động worker (Server/GameWorkerPool.cs:253) · Ghi trạng thái (Server/MatchStore.cs) · Phạm vi phục hồi trong README (README.md)
+## 3. LAN, Internet và chứng chỉ sau đợt sửa
 
-### 3. Nhận định nào từ framework cũ còn đúng?
+### 3.1. Địa chỉ lắng nghe và địa chỉ client
 
-| Nhận định ở bản cũ                                                  | Kết luận cho bản hiện tại                                                                                                                                                                                                                                                                                                |
-| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| “Game server chỉ chuyển tiếp nước đi, client tự quyết định bàn cờ.” | Đã khắc phục trong luồng chạy chính. Worker dựng bàn, kiểm tra nước đi và trả trạng thái. Client nhận snapshot sau khi lưu thành công. GameWorker (Server/GameWorker.cs:65) · MatchRules (Server/MatchRules.cs)                                                                                                          |
-| “Chưa lưu kết quả/Elo.”                                             | Cần tách thành hai nhận định. Kết quả đã lưu với điều kiện ngăn ghi kết thúc hai lần. Elo sau trận vẫn chưa cập nhật. Nếu bổ sung Elo, cần bảo đảm việc xử lý lại cùng roomId không cộng hoặc trừ điểm lần hai. MatchStore (Server/MatchStore.cs:39) · README (README.md)                                                |
-| “Hai worker chủ yếu phục vụ xác thực, client phải cấu hình pin.”    | Đã thay đổi ở entrypoint hiện tại. Tuy nhiên Network/README.md vẫn hướng dẫn khởi tạo AuthCluster và ghi pin SHA-256 là bắt buộc. Đây là mâu thuẫn tài liệu cụ thể, dễ khiến thành viên mới tái hiện nhầm kiến trúc cũ. Tài liệu Network cũ (Network/README.md:36) · Hướng dẫn LAN hiện tại (docs/HUONG_DAN_CHAY_LAN.md) |
-| “Mất server giữa ván thì mất trận.”                                 | Cần chỉ rõ thành phần bị mất. Mất một worker đã có đường phục hồi và test cho cả hai trò chơi. Mất Gateway hoặc mất kết nối client vẫn chưa có đường vào lại ván. Test phục hồi worker (Tests/TransportTests/MatchRecoveryTests.cs:16) · README (README.md)                                                              |
+- Server console, ServerManager và gateway của `AuthCluster` mặc định bind `0.0.0.0`, nhận kết nối trên mọi giao diện IPv4. Mặc định này không đồng nghĩa đã bật IPv6.
+- `CHESS_BIND_ADDRESS` cho phép chọn IP cục bộ cụ thể, IPv6 hoặc `127.0.0.1` nếu chỉ chạy trên máy. Giá trị trống được hiểu là mặc định `0.0.0.0`; địa chỉ không hợp lệ bị từ chối.
+- Client dùng IP LAN, tên miền hoặc IP public thực tế của server. `0.0.0.0` là địa chỉ bind, không phải endpoint để phân phối cho người chơi.
+- Worker vẫn bind loopback và không cần mở cổng `9001/9002` ra LAN/Internet. MySQL cũng không cần công khai nếu chạy cùng máy server.
 
-### 4. Nên bổ sung theo thứ tự nào?
+### 3.2. Danh tính TLS độc lập với bind
 
-1. Ưu tiên cao nhất — vào lại ván sau khi rớt mạng. Gắn quyền trở lại phòng với userId đã xác thực, cho một khoảng chờ trước khi chốt ABORTED, quy định rõ đồng hồ trong lúc mất mạng, rồi gửi snapshot mới nhất khi client quay lại. Nghiệm thu bằng hai máy B/C thật: B ngắt Wi‑Fi sau một nước đã xác nhận, kết nối lại, cả hai tiếp tục đúng bàn, đúng lượt và đúng đồng hồ.
-2. Phục hồi khi khởi động lại Gateway. Bổ sung truy vấn ván đang mở, chính sách xử lý ván bỏ dở và cơ chế nhận lại quyền điều phối. Nghiệm thu bằng cách tắt Gateway giữa trận, mở lại rồi cho cả hai client đăng nhập lại. Đây là bước tận dụng giá trị của dữ liệu đã lưu trong MySQL.
-3. Chốt cam kết dự phòng và đo tải thực. Quyết định có dành chỗ cho sự cố hay chấp nhận chờ worker khởi động lại. Đo độ trễ nước đi và thời gian phục hồi khi tải thấp, gần đầy và khi DB chậm. Bài test có giá trị nhất lúc này là hai client thật + MySQL thật + dừng worker giữa ván. Bộ test hiện tại kiểm tra sự cố worker bằng kho giả lập và kiểm tra MySQL bằng bài riêng. Lượt phân tích này rà mã nguồn và các bài test sẵn có, chưa chạy thêm thử nghiệm LAN hoặc benchmark. Test sự cố worker (Tests/TransportTests/MatchRecoveryTests.cs:16) · Test MySQL (Tests/TransportTests/MySqlMatchStoreTests.cs:18)
-4. Chốt yêu cầu UDP và đồng bộ lại sơ đồ, tài liệu. Nếu tiêu chí môn học yêu cầu minh họa UDP, tính năng phù hợp nhất là đo RTT từ client tới Gateway bằng UDP nonce. Nó bổ sung một phép đo hiện đang thiếu và có thể demo trực tiếp trên B/C. P2P chat là hạng mục riêng, cần tính đến NAT, firewall và xác thực người gửi khi chạy qua Internet. Nếu mục tiêu chính là game ổn định trên LAN/VPS, có thể giữ chat qua TLS và sửa sơ đồ theo hệ thống thực tế. Đồng thời nên gắn nhãn kiến trúc cũ cho phần AuthCluster trong tài liệu Network. Flow mục tiêu (PLAN_UDP_WORKFLOW.md) · Tài liệu Network (Network/README.md)
+Server console khi chạy `--create-cert` và ServerManager khi tạo PFX dùng chung `ServerNetworkOptions`. Chứng chỉ thử nghiệm có SAN cho localhost, loopback IPv4/IPv6, IP bind cụ thể và các tên/IP bổ sung. Địa chỉ wildcard không được tự đưa vào SAN.
 
-Nếu chỉ chọn một cải tiến cho đợt tới, mình chọn reconnect vào đúng ván. Phần khó là giữ được trạng thái đã xác nhận qua sự cố worker thì dự án đã làm được. Bổ sung đường cho người chơi lấy lại trạng thái đó sau khi Wi‑Fi chập chờn sẽ tạo khác biệt rõ nhất khi demo LAN và khi chơi qua Internet.
+`CHESS_CERT_HOSTS` hoặc trường **Tên/IP chứng chỉ** trong ServerManager nhận danh sách DNS/IP phân cách bằng dấu phẩy, chẳng hạn `192.168.1.10,chess.example.com`. Danh sách không nhận URL, cổng hoặc địa chỉ wildcard. Khi bind `0.0.0.0`, cần khai báo tên/IP mà client thực sự dùng để chứng chỉ phục vụ được địa chỉ đó.
+
+PFX cũ chỉ có localhost không tự được cập nhật. Nếu đổi danh tính chứng chỉ, cần tạo/cấp lại PFX và cập nhật nguồn tin cậy tương ứng ở client. Giữ PFX/khóa riêng trên server; chỉ phân phối chứng chỉ công khai qua kênh tin cậy. Với Internet production, ưu tiên chứng chỉ CA công cộng có SAN khớp tên miền.
+
+### 3.3. Điều kiện triển khai chưa thể thay thế bằng sửa mã
+
+Chỉ mở cổng TCP Gateway cần thiết, mặc định `8888`, với phạm vi firewall phù hợp. Chạy sau router cần port forwarding tới IP LAN server; CGNAT có thể yêu cầu IP public, VPS hoặc VPN có định tuyến phù hợp. Không bind IP public của router nếu IP đó không thuộc card mạng server.
+
+Kiểm thử hiện có xác nhận kết nối tới địa chỉ ngoài loopback trên chính máy chạy test; **chưa nghiệm thu từ máy LAN khác hoặc qua Internet thực tế**. Gateway bind mọi card IPv4 cũng có thể nhận lưu lượng từ card VPN/public, nên cần rà soát firewall, giới hạn truy cập và theo dõi tải trước khi công khai.
+
+Nguồn: [cấu hình mạng dùng chung](../Server/ServerNetworkOptions.cs), [server console](../Server/Program.cs), [ServerManager](../ServerManager/ServerManagerForm.cs), [test LAN/TLS](../Tests/TransportTests/LanGatewayTests.cs), [test bind/SAN](../Tests/TransportTests/ServerNetworkOptionsTests.cs). Hướng dẫn vận hành: [LAN](HUONG_DAN_CHAY_LAN.md), [VPS và NAT](PHAT_HANH_VPS.md).
+
+## 4. Kết quả kiểm chứng gần nhất
+
+Môi trường: Windows, SDK .NET `10.0.401`, dự án server/test `net8.0`; gọi công cụ Windows từ WSL. Đây là lượt chạy sau khi sửa cấu hình mạng và khối điều kiện trong `GameServer.Start`.
+
+| Bộ kiểm tra | Đạt | Trượt | Bỏ qua |
+| --- | ---: | ---: | ---: |
+| TransportTests | 75 | 0 | 5 |
+| ServerManagerTests | 4 | 0 | 0 |
+| **Tổng hai bộ vừa chạy** | **79** | **0** | **5** |
+
+Build `ServerManager/OnlineChessGame.ServerManager.csproj` thành công với **0 warning, 0 error**, đồng thời build các project phụ thuộc gồm server. Đây là kiểm tra biên dịch, không phải nghiệm thu thao tác UI WinForms.
+
+Các bằng chứng mạng mới:
+
+- Test gateway auth mặc định kết nối tới IP ngoài loopback từng thất bại với `connection refused` trước khi đổi mặc định bind; đã đạt sau sửa.
+- `GatewayClient` kết nối TLS tới `GameServer` trên IP ngoài loopback: chứng chỉ được tạo bằng helper chung có SAN đúng thì được chấp nhận; thiếu SAN cho IP đó thì bị từ chối.
+- Test cấu hình kiểm tra mặc định/ghi đè bind IPv4–IPv6, danh tính SAN và từ chối các giá trị tên/IP chứng chỉ không hợp lệ.
+- Năm test dùng Gateway không có match store từng lỗi `NullReferenceException` do thiếu dấu ngoặc quanh khối `durable is not null`. Đã sửa và chạy lại bộ transport; cả năm không còn trượt.
+
+Năm ca bị bỏ qua vì chưa cấu hình MySQL thử nghiệm trong lượt chạy này:
+
+1. `AbortPersistsTerminalRevisionInRowAndSnapshot`.
+2. `StartupListsOnlyOpenMatchesAndAllowsOneReclaimAndOneAbort`.
+3. `ReclaimRejectsSnapshotSupersededByAcknowledgedMove`.
+4. `MigrationPersistsSnapshotAndFencesStaleAndDuplicateTerminalWrites`.
+5. `ConfirmedChessMovesSurviveWorkerFailoverWithMySql`.
+
+Không diễn giải **75 test đạt** thành “MySQL đã hết lỗi”. AuthTests, ChessTests, CaroTests, UiSmoke và test Python chưa được chạy lại trong đợt sửa mạng này.
+
+### Mốc kiểm chứng trước đợt sửa mạng
+
+Bản ghi trước đó ngày 28/11/2026 dùng mã ứng dụng tại `e1bc53a` với test đã cập nhật trong working tree, MySQL thật và hai worker tiến trình con. Transport có 41 đạt, 7 trượt; bảy ca trượt gồm năm lỗi vòng đời Gateway vừa sửa và hai lỗi MySQL tại mục 5. Bản ghi cũng nêu AuthTests 29 đạt, ChessTests 10 đạt, CaroTests 39 đạt, ServerManagerTests 4 đạt, UiSmoke 15 đạt và test Python 15 đạt. Các số này là **kết quả lịch sử**, không cộng với bảng hiện tại và không coi là lượt kiểm chứng mới.
+
+Lượt trước đã thử tiếp tục ván cờ vua sau khi dừng worker với MySQL thật: nước `e2e4` được giữ, worker còn lại nhận phòng với generation mới, rồi hai client tiếp tục `e7e5`. Bằng chứng này giới hạn ở cấu hình đã thử, không chứng minh tải lớn hay truy cập Internet.
+
+## 5. Độ bền dữ liệu và phục hồi: phần đạt, phần còn thiếu
+
+| Tình huống | Hiện trạng | Điều cần phân biệt |
+| --- | --- | --- |
+| Một worker mất kết nối giữa ván | Có đường nạp lại snapshot, tăng generation và gán worker còn sức chứa. Test kho giả lập cho Chess/Caro nằm trong bộ transport đã đạt. | Đồng hồ vẫn tính khi chuyển worker; không cam kết phục hồi tức thời nếu thiếu sức chứa. |
+| Gateway khởi động lại | Đọc các ván chưa kết thúc; hủy ván revision 0; reclaim ván đã đi và chờ hai user quay lại trong 90 giây. Test giao thức với snapshot nạp sẵn/kho giả lập đã đạt. | Chưa thử đầy đủ kill/restart Gateway với MySQL và hai WinForms. Luồng hiện xóa mục chờ trước khi mở worker thành công; client ở sảnh chỉ mở kết nối game khi tìm trận. |
+| Client mất kết nối khi Gateway còn sống | Có thể gỡ phòng, báo `OPPONENT_LEFT` và lưu `ABORTED`. | Test tái hiện hành vi này đạt không có nghĩa tính năng reconnect đã đạt. Chưa có khoảng chờ nối lại ván đang hoạt động. |
+| Reclaim gặp snapshot cũ | Lượt MySQL trước ghi nhận `TryReclaimAsync` có thể nhận snapshot cũ sau khi một nước mới đã được xác nhận. | SQL hiện kiểm generation và `result IS NULL`, chưa kiểm revision mong đợi. Đợt sửa mạng không sửa lỗi này; test tương ứng hiện skipped. |
+| Hủy ván qua `AbortMatchAsync` | Lượt MySQL trước ghi nhận snapshot terminal revision tăng nhưng cột revision SQL không tăng cùng. | SQL hiện chỉ cập nhật result/snapshot. Đợt sửa mạng không sửa lỗi này; cần chạy lại test với DB sau khi sửa. |
+
+Nguồn: [DurableMatches](../Server/DurableMatches.cs), [MatchStore](../Server/MatchStore.cs), [MatchRecoveryTests](../Tests/TransportTests/MatchRecoveryTests.cs), [MySqlMatchStoreTests](../Tests/TransportTests/MySqlMatchStoreTests.cs), [DashboardForm](../Design/DashboardForm.cs).
+
+### Sức chứa dự phòng
+
+Mặc định `GameWorkerPool` đặt ngưỡng nhận mới toàn pool bằng sức chứa một worker: 32 phòng tổng với hai worker 32 phòng/worker. Đây là chủ đích dành khả năng chịu mất một worker, khác với giả định nhận 48 hoặc 64 phòng trong đánh giá cũ. API có thể cấu hình ngưỡng khác, nhưng server console và ServerManager hiện dùng mặc định này.
+
+Vẫn còn cửa sổ cần kiểm thử: phép tính tải nhận mới bỏ qua tiến trình vừa thoát trong khi phòng của nó còn chờ phục hồi. Nếu có cặp mới đến đồng thời, chỗ dự phòng có thể bị cạnh tranh. Cần đo ở mức tải mặc định và lúc failover, không suy từ test ít phòng thành bảo đảm N−1 trong mọi tình huống.
+
+### Độ trễ và điểm lỗi chung
+
+Mỗi nước đi đi qua Gateway → worker → Gateway → MySQL rồi mới phát snapshot cho hai client. Worker dựng lại bàn từ lịch sử; chi phí tăng theo độ dài ván. Heartbeat đã có CPU, yêu cầu đang xử lý và thời gian xử lý luật trung bình, nhưng chưa thay thế benchmark MOVE→STATE với p95/p99 theo số phòng, độ dài ván và độ chậm DB.
+
+Gateway và MySQL vẫn là điểm lỗi chung. Hai worker trên cùng máy không bảo vệ được sự cố cả máy. Khả năng đọc ván mở sau restart là bước phục hồi ứng dụng, không phải mô hình nhiều Gateway hoạt động dự phòng hoàn chỉnh. Công khai Internet cũng cần kiểm tra khả năng chống chiếm dụng slot kết nối/ngân sách auth; giới hạn tải toàn cục không đồng nghĩa có kiểm soát theo nguồn kết nối.
+
+## 6. Ưu tiên tiếp theo
+
+1. **Sửa và kiểm chứng hai lỗi MySQL còn mở.** Reclaim phải từ chối snapshot đã bị nước mới vượt qua; abort phải giữ revision cột SQL và snapshot nhất quán. Chạy lại cả năm ca DB đang bị bỏ qua bằng instance thử nghiệm riêng.
+2. **Hoàn thiện reconnect và phục hồi Gateway.** Gắn quyền trở lại phòng với userId xác thực, quy định khoảng chờ/đồng hồ và giữ khả năng thử lại nếu chưa mở được worker. Nghiệm thu hai WinForms + MySQL thật khi ngắt Wi-Fi và khi kill/restart Gateway.
+3. **Nghiệm thu LAN/Internet thật.** Dùng máy A/B/C, kiểm tra TLS/SAN, đăng nhập, ghép trận, nước đi, chat và failover. Với Internet, kiểm tra firewall/NAT/CGNAT, chứng chỉ CA và hạn chế truy cập; không chỉ kiểm tra TCP mở cổng.
+4. **Kiểm tra dự phòng dưới tải.** Tạo phòng mới đồng thời với worker sập, đo chỗ dự phòng, thời gian phục hồi và p95/p99 MOVE→STATE; bổ sung trường hợp DB chậm/mất kết nối.
+5. **Đồng bộ sơ đồ và phạm vi giao thức.** Gắn nhãn luồng auth pin cũ, mô tả đúng Gateway v3/TLS/MySQL. Nếu môn học yêu cầu UDP, ưu tiên probe RTT client–Gateway có nonce; P2P chat là hạng mục riêng cần giải quyết NAT và xác thực.
+
+[Kế hoạch và tiêu chí nghiệm thu giai đoạn 3](PLAN_GIAI_DOAN_3.md).
+
+## 7. Chạy lại từ thư mục gốc
+
+Dùng PowerShell Windows với SDK hỗ trợ .NET 8. Để chạy ca DB, đặt `MATCH_TEST_MYSQL` và `AUTH_TEST_MYSQL` trỏ tới MySQL loopback **dành riêng cho test**, với quyền tạo/xóa schema thử nghiệm. Không dùng database vận hành. Thiếu biến sẽ làm các ca liên quan bị bỏ qua. Đặt Stockfish tại `Engines/Stockfish/stockfish.exe` nếu muốn kiểm tra engine ngoài.
+
+```powershell
+dotnet test Tests/TransportTests/TransportTests.csproj --nologo --logger trx
+dotnet test Tests/ServerManagerTests/ServerManagerTests.csproj --nologo
+dotnet build ServerManager/OnlineChessGame.ServerManager.csproj --nologo
+
+# Các bộ kiểm tra bổ sung, chưa chạy lại trong đợt sửa mạng:
+dotnet test Tests/AuthTests/AuthTests.csproj --logger trx
+dotnet test Tests/ChessTests/ChessTests.csproj
+dotnet test Tests/CaroTests/CaroTests.csproj
+dotnet run --project Tests/UiSmoke/UiSmoke.csproj
+python -m unittest discover -s Tests -p "test_*.py"
+```
+
+Khi báo cáo nghiệm thu, ghi riêng kết quả build, test tự động, test MySQL, thao tác UI và kiểm tra qua các máy thật. Không dùng một loại bằng chứng để thay thế loại còn lại.

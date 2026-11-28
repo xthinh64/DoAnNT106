@@ -546,6 +546,7 @@ namespace OnlineChessGame
             GameClient.Instance.OnDrawResponseReceived += OnlineDrawResponseReceived;
             GameClient.Instance.OnOpponentLeft += OnlineOpponentLeft;
             GameClient.Instance.OnDisconnected += OnlineDisconnected;
+            GameClient.Instance.OnRecoveryFailed += RecoveryFailed;
             GameClient.Instance.OnMatchState += OnlineStateReceived;
             GameClient.Instance.OnRecovering += OnlineRecovering;
             gameTimer = new System.Windows.Forms.Timer { Interval = 250 };
@@ -563,7 +564,9 @@ namespace OnlineChessGame
         private void RunOnUi(Action action)
         {
             if (IsDisposed || !IsHandleCreated) return;
-            BeginInvoke(() => { if (!IsDisposed) action(); });
+            long connectionVersion = GameClient.Instance.ConnectionVersion;
+            BeginInvoke(() => { if (!IsDisposed && !onlineDetached &&
+                connectionVersion == GameClient.Instance.ConnectionVersion) action(); });
         }
 
         private void OnlineMoveReceived(string move) => RunOnUi(() =>
@@ -630,12 +633,33 @@ namespace OnlineChessGame
             else AddChatMessage("He thong", "Đối thủ từ chối hòa.");
         });
         private void OnlineOpponentLeft(string message) => RunOnUi(() => EndGame(message));
-        private void OnlineDisconnected() => RunOnUi(() => EndGame("Mất kết nối game server."));
+        private void OnlineDisconnected() => RunOnUi(() => lblTurn.Text = "Mất kết nối · Đang nối lại (90 giây)…");
+        private void RecoveryFailed(string message)
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            long connectionVersion = GameClient.Instance.ConnectionVersion;
+            BeginInvoke(() =>
+            {
+                if (connectionVersion != GameClient.Instance.ConnectionVersion || IsDisposed || onlineDetached) return;
+                onlineDetached = true;
+                DetachOnlineEvents();
+                GameClient.Instance.Disconnect();
+                AuthConnection.SessionToken = null;
+                AuthConnection.Player = null;
+                Program.Context.SwitchTo(new LoginForm("", message));
+            });
+        }
 
         private async Task LeaveOnlineGameAsync()
         {
             if (isSolo || onlineDetached) return;
             onlineDetached = true;
+            DetachOnlineEvents();
+            await GameClient.Instance.LeaveRoomAsync();
+        }
+
+        private void DetachOnlineEvents()
+        {
             GameClient.Instance.OnMoveReceived -= OnlineMoveReceived;
             GameClient.Instance.OnChatReceived -= OnlineChatReceived;
             GameClient.Instance.OnSurrenderReceived -= OnlineSurrenderReceived;
@@ -645,12 +669,7 @@ namespace OnlineChessGame
             GameClient.Instance.OnDisconnected -= OnlineDisconnected;
             GameClient.Instance.OnMatchState -= OnlineStateReceived;
             GameClient.Instance.OnRecovering -= OnlineRecovering;
-            if (!string.IsNullOrEmpty(GameClient.Instance.CurrentRoomId))
-            {
-                try { await SendOnlineAsync(PacketType.LEAVE_ROOM).WaitAsync(TimeSpan.FromSeconds(3)); }
-                catch (TimeoutException) { GameClient.Instance.Disconnect(); }
-                finally { GameClient.Instance.CurrentRoomId = string.Empty; }
-            }
+            GameClient.Instance.OnRecoveryFailed -= RecoveryFailed;
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
